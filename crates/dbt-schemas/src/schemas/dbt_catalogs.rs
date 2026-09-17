@@ -297,10 +297,7 @@ impl DbtCatalogs {
         };
 
         match (catalog.catalog_type, peer) {
-            (
-                CatalogType::IcebergRest | CatalogType::Horizon,
-                AdapterType::Snowflake,
-            )
+            (CatalogType::IcebergRest | CatalogType::Horizon, AdapterType::Snowflake)
             | (CatalogType::Unity, AdapterType::Snowflake | AdapterType::Databricks) => {}
             (CatalogType::Glue, _) => {
                 return Err(fs_err!(

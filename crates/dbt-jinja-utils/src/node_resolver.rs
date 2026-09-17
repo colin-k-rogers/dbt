@@ -776,12 +776,9 @@ impl NodeResolverTracker for NodeResolver {
     ) -> FsResult<RefRecord> {
         let (unique_id, relation, status, deferred_relation) =
             self.lookup_ref(maybe_package_name, name, version, maybe_node_package_name)?;
-        let relation =
-            self.relation_for_adapter(&unique_id, relation, consumer_adapter, false)?;
+        let relation = self.relation_for_adapter(&unique_id, relation, consumer_adapter, false)?;
         let deferred_relation = deferred_relation
-            .map(|relation| {
-                self.relation_for_adapter(&unique_id, relation, consumer_adapter, true)
-            })
+            .map(|relation| self.relation_for_adapter(&unique_id, relation, consumer_adapter, true))
             .transpose()?;
         Ok((unique_id, relation, status, deferred_relation))
     }
@@ -1576,14 +1573,11 @@ catalogs:
       duckdb:
         endpoint: https://example.com/catalog
         warehouse: shared
-        catalog_database: duck-alias
+        catalog_database: duck_shared
 "#,
         )
         .unwrap();
-        let catalogs = DbtCatalogs::new(
-            yaml.as_mapping().unwrap().clone(),
-            yaml.span().clone(),
-        );
+        let catalogs = DbtCatalogs::new(yaml.as_mapping().unwrap().clone(), yaml.span().clone());
         let mut resolver = NodeResolver {
             catalogs: Some(Arc::new(catalogs)),
             ..Default::default()
@@ -1607,12 +1601,7 @@ catalogs:
         };
         model.__model_attr__.catalog_name = Some("shared".to_string());
         resolver
-            .insert_ref(
-                &model,
-                AdapterType::Snowflake,
-                ModelStatus::Enabled,
-                false,
-            )
+            .insert_ref(&model, AdapterType::Snowflake, ModelStatus::Enabled, false)
             .unwrap();
 
         let (_, relation, _, _) = resolver
@@ -1625,7 +1614,7 @@ catalogs:
             )
             .unwrap();
         let rendered = relation.to_string();
-        assert!(rendered.contains("duck_alias"), "{rendered}");
+        assert!(rendered.contains("duck_shared"), "{rendered}");
         assert!(!rendered.contains("SNOWFLAKE_SHARED"), "{rendered}");
     }
 

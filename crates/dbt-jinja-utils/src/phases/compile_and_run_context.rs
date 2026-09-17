@@ -337,6 +337,7 @@ impl RefFunction {
         }
     }
 
+    /// Set the adapter used by the node that invokes this ref function.
     pub fn with_consumer_adapter(mut self, consumer_adapter: AdapterType) -> Self {
         self.consumer_adapter = Some(consumer_adapter);
         self

@@ -1346,8 +1346,7 @@ fn validate_multi_adapter_dependencies(
         };
         let producer_adapter = producer.node_adapter();
         if producer_adapter == consumer_adapter
-            || (producer_adapter != AdapterType::DuckDB
-                && consumer_adapter != AdapterType::DuckDB)
+            || (producer_adapter != AdapterType::DuckDB && consumer_adapter != AdapterType::DuckDB)
         {
             continue;
         }
@@ -1356,12 +1355,12 @@ fn validate_multi_adapter_dependencies(
             return Err(fs_err!(
                 ErrorCode::InvalidConfig,
                 "Cross-adapter ref from '{}' ({}) to '{}' ({}) is not supported for producer \
-                 resource type '{}'; the initial DuckDB bridge supports SQL table models only",
+                 resource type '{:?}'; the initial DuckDB bridge supports SQL table models only",
                 producer_id,
                 producer_adapter.as_ref(),
                 consumer_id,
                 consumer_adapter.as_ref(),
-                producer.resource_type()
+                producer.resource_type(),
             ));
         };
 
@@ -2212,27 +2211,25 @@ mod tests {
 
         let producer_id = "model.test.producer";
         let consumer_id = "model.test.consumer";
-        let model = |id: &str,
-                     adapter: AdapterType,
-                     catalog_name: Option<&str>,
-                     dependencies: &[&str]| {
-            let mut model = DbtModel {
-                __common_attr__: CommonAttributes {
-                    unique_id: id.to_string(),
-                    name: id.rsplit('.').next().unwrap_or(id).to_string(),
-                    package_name: "test".to_string(),
-                    language: Some("sql".to_string()),
+        let model =
+            |id: &str, adapter: AdapterType, catalog_name: Option<&str>, dependencies: &[&str]| {
+                let mut model = DbtModel {
+                    __common_attr__: CommonAttributes {
+                        unique_id: id.to_string(),
+                        name: id.rsplit('.').next().unwrap_or(id).to_string(),
+                        package_name: "test".to_string(),
+                        language: Some("sql".to_string()),
+                        ..Default::default()
+                    },
                     ..Default::default()
-                },
-                ..Default::default()
+                };
+                model.__base_attr__.adapter = adapter;
+                model.__base_attr__.materialized = DbtMaterialization::Table;
+                model.__base_attr__.depends_on.nodes =
+                    dependencies.iter().map(|id| (*id).to_string()).collect();
+                model.__model_attr__.catalog_name = catalog_name.map(str::to_string);
+                model
             };
-            model.__base_attr__.adapter = adapter;
-            model.__base_attr__.materialized = DbtMaterialization::Table;
-            model.__base_attr__.depends_on.nodes =
-                dependencies.iter().map(|id| (*id).to_string()).collect();
-            model.__model_attr__.catalog_name = catalog_name.map(str::to_string);
-            model
-        };
         let run = |producer_adapter, consumer_adapter, catalog_name, catalogs| {
             let mut nodes = Nodes::default();
             nodes.models.insert(
@@ -2241,34 +2238,17 @@ mod tests {
             );
             nodes.models.insert(
                 consumer_id.to_string(),
-                Arc::new(model(
-                    consumer_id,
-                    consumer_adapter,
-                    None,
-                    &[producer_id],
-                )),
+                Arc::new(model(consumer_id, consumer_adapter, None, &[producer_id])),
             );
             check_multi_adapter_catalog_edges(&nodes, catalogs)
         };
 
         assert!(
-            run(
-                AdapterType::Snowflake,
-                AdapterType::Snowflake,
-                None,
-                None
-            )
-            .is_ok(),
+            run(AdapterType::Snowflake, AdapterType::Snowflake, None, None).is_ok(),
             "same-adapter native refs do not need a bridge"
         );
         assert!(
-            run(
-                AdapterType::Snowflake,
-                AdapterType::DuckDB,
-                None,
-                None
-            )
-            .is_err(),
+            run(AdapterType::Snowflake, AdapterType::DuckDB, None, None).is_err(),
             "toggling only the consumer to DuckDB creates a bridge requirement"
         );
 
@@ -2327,9 +2307,8 @@ catalogs:
         producer.__base_attr__.materialized = DbtMaterialization::Table;
 
         let mut nodes = Nodes::default();
-        nodes
-            .models
-            .insert(producer.unique_id(), Arc::new(producer));
+        let producer_id = producer.__common_attr__.unique_id.clone();
+        nodes.models.insert(producer_id, Arc::new(producer));
         assert!(check_multi_adapter_catalog_edges(&nodes, None).is_ok());
     }
 
