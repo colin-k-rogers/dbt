@@ -13,6 +13,7 @@ use crate::phases::compile::DependencyValidationConfig;
 use dbt_adapter::Adapter;
 use dbt_adapter::load_store::ResultStore;
 use dbt_adapter::relation::RelationObject;
+use dbt_adapter_core::AdapterType;
 use dbt_common::once_cell_vars::DISPATCH_CONFIG;
 use dbt_schemas::filter::{RunFilter, Sample};
 use dbt_schemas::schemas::Nodes;
@@ -268,6 +269,10 @@ pub struct RefFunction {
     /// The unique_id of the node that owns this ref context.
     /// Used for O(1) defer decisions via `NodeResolver::prefers_deferred`.
     current_node_unique_id: String,
+    /// Adapter compiling the consumer. Absent only in the package-level base
+    /// context, which is replaced by a node-scoped ref function before model SQL
+    /// is rendered.
+    consumer_adapter: Option<AdapterType>,
 }
 
 impl RefFunction {
@@ -285,6 +290,7 @@ impl RefFunction {
             validation_config: DependencyValidationConfig::default(),
             microbatch_context: None,
             current_node_unique_id: String::new(),
+            consumer_adapter: None,
         }
     }
 
@@ -303,6 +309,7 @@ impl RefFunction {
             validation_config,
             microbatch_context: None,
             current_node_unique_id,
+            consumer_adapter: None,
         }
     }
 
@@ -326,7 +333,13 @@ impl RefFunction {
             validation_config,
             microbatch_context: Some(microbatch_context),
             current_node_unique_id,
+            consumer_adapter: None,
         }
+    }
+
+    pub fn with_consumer_adapter(mut self, consumer_adapter: AdapterType) -> Self {
+        self.consumer_adapter = Some(consumer_adapter);
+        self
     }
 
     /// Set the microbatch context on this RefFunction.
@@ -439,12 +452,22 @@ impl Object for RefFunction {
     ) -> Result<MinijinjaValue, MinijinjaError> {
         let (package_name, model_name, version) = self.resolve_args(args)?;
 
-        match self.node_resolver.lookup_ref(
-            &package_name,
-            &model_name,
-            &version,
-            &Some(self.package_name.clone()),
-        ) {
+        let resolved_ref = match self.consumer_adapter {
+            Some(consumer_adapter) => self.node_resolver.lookup_ref_for_adapter(
+                &package_name,
+                &model_name,
+                &version,
+                &Some(self.package_name.clone()),
+                consumer_adapter,
+            ),
+            None => self.node_resolver.lookup_ref(
+                &package_name,
+                &model_name,
+                &version,
+                &Some(self.package_name.clone()),
+            ),
+        };
+        match resolved_ref {
             Ok((unique_id, relation, _, deferred_relation)) => {
                 // Validate that this ref is allowed (only if validation is configured)
                 self.validate_dependency(&unique_id, &package_name, &model_name)?;

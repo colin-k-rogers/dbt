@@ -970,7 +970,7 @@ pub async fn resolve_models(
             },
             __adapter_attr__: AdapterAttr::from_config_and_dialect(
                 &model_config.__warehouse_specific_config__,
-                default_adapter,
+                selected_adapter,
             ),
             // Derived from the model config
             deprecated_config: model_config.clone().into(),
@@ -992,7 +992,7 @@ pub async fn resolve_models(
             package_name,
             base_ctx,
             &components,
-            default_adapter,
+            selected_adapter,
         )?;
 
         // Update time_spine node_relation with the resolved relation components
@@ -1011,7 +1011,7 @@ pub async fn resolve_models(
                 };
             }
         }
-        match node_resolver.insert_ref(&dbt_model, default_adapter, status, false) {
+        match node_resolver.insert_ref(&dbt_model, selected_adapter, status, false) {
             Ok(_) => (),
             Err(e) => {
                 let err_with_loc = e.with_location(dbt_asset.path.clone());

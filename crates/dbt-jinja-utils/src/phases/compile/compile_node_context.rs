@@ -305,7 +305,8 @@ where
         runtime_config.clone(),
         validation_config_with_depends_on.clone(),
         model.common().unique_id.clone(),
-    );
+    )
+    .with_consumer_adapter(adapter_type);
     let ref_value = MinijinjaValue::from_object(ref_function);
     base_builtins.insert("ref".to_string(), ref_value.clone());
 

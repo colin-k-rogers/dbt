@@ -496,6 +496,19 @@ pub trait NodeResolverTracker: fmt::Debug + Send + Sync {
         version: &Option<String>,
         node_package_name: &Option<String>,
     ) -> FsResult<(String, MinijinjaValue, ModelStatus, Option<MinijinjaValue>)>;
+    /// Resolve a ref for the adapter compiling its consumer. Implementations
+    /// that do not retain logical catalog identity may use the producer relation
+    /// unchanged.
+    fn lookup_ref_for_adapter(
+        &self,
+        package_name: &Option<String>,
+        name: &str,
+        version: &Option<String>,
+        node_package_name: &Option<String>,
+        _consumer_adapter: AdapterType,
+    ) -> FsResult<(String, MinijinjaValue, ModelStatus, Option<MinijinjaValue>)> {
+        self.lookup_ref(package_name, name, version, node_package_name)
+    }
     /// Resolve a node's own relation by identity, for binding `this`. Unlike
     /// `lookup_ref`, a name shared with another node is not ambiguous here
     /// because `unique_id` selects the record.

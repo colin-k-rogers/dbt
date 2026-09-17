@@ -22,8 +22,9 @@ use dbt_schemas::dbt_types::RelationType;
 use dbt_schemas::{
     filter::RunFilter,
     schemas::{
-        DbtFunction, DbtSource, InternalDbtNodeAttributes, IntrospectionKind, Nodes,
+        DbtFunction, DbtModel, DbtSource, InternalDbtNodeAttributes, IntrospectionKind, Nodes,
         common::{DbtMaterialization, DbtQuoting, parse_deprecation_date},
+        dbt_catalogs::DbtCatalogs,
         ref_and_source::{DbtRef, DbtSourceWrapper},
         telemetry::NodeType,
     },
@@ -32,6 +33,17 @@ use dbt_schemas::{
 use minijinja::{Value as MinijinjaValue, value::function_object::FunctionObject};
 
 type RefRecord = (String, MinijinjaValue, ModelStatus, Option<MinijinjaValue>);
+
+#[derive(Debug, Clone)]
+struct CatalogRef {
+    catalog_name: String,
+    producer_adapter: AdapterType,
+    schema: String,
+    identifier: String,
+    relation_type: RelationType,
+    quoting: dbt_schemas::schemas::common::ResolvedQuoting,
+    event_time: Option<String>,
+}
 
 fn downgraded_node_dependency_warning(
     error: &FsError,
@@ -114,6 +126,9 @@ pub struct NodeResolver {
     /// Nodes that will be materialized (selected, not frontier, not source).
     /// For run path: defer upstream if NOT in this set.
     pub nodes_materialized: HashSet<String>,
+    catalogs: Option<Arc<DbtCatalogs>>,
+    catalog_refs: HashMap<String, CatalogRef>,
+    deferred_catalog_refs: HashMap<String, CatalogRef>,
 }
 
 impl NodeResolver {
@@ -135,6 +150,7 @@ impl NodeResolver {
             renaming,
             compile_or_test,
             package_search_order,
+            catalogs: dbt_adapter::load_catalogs::fetch_catalogs(),
             ..Default::default()
         };
         for (_, node) in nodes.iter() {
@@ -201,6 +217,13 @@ impl NodeResolver {
     /// Merge another NodeResolver into this one, avoiding duplicates
     /// This uses functional programming style for cleaner code
     pub fn merge(&mut self, source: NodeResolver) {
+        if self.catalogs.is_none() {
+            self.catalogs.clone_from(&source.catalogs);
+        }
+        self.catalog_refs.extend(source.catalog_refs.clone());
+        self.deferred_catalog_refs
+            .extend(source.deferred_catalog_refs.clone());
+
         for (key, source_entries) in source.refs {
             let target_entries = self.refs.entry(key).or_default();
             let existing_ids: HashSet<String> = target_entries
@@ -241,6 +264,82 @@ impl NodeResolver {
                     .filter(|(unique_id, _, _)| !existing_ids.contains(unique_id)),
             );
         }
+    }
+
+    fn relation_for_adapter(
+        &self,
+        unique_id: &str,
+        relation: MinijinjaValue,
+        consumer_adapter: AdapterType,
+        deferred: bool,
+    ) -> FsResult<MinijinjaValue> {
+        let catalog_refs = if deferred {
+            &self.deferred_catalog_refs
+        } else {
+            &self.catalog_refs
+        };
+        let Some(catalog_ref) = catalog_refs.get(unique_id) else {
+            return Ok(relation);
+        };
+        if catalog_ref.producer_adapter == consumer_adapter
+            || (catalog_ref.producer_adapter != AdapterType::DuckDB
+                && consumer_adapter != AdapterType::DuckDB)
+        {
+            return Ok(relation);
+        }
+        let catalogs = self
+            .catalogs
+            .clone()
+            .or_else(dbt_adapter::load_catalogs::fetch_catalogs);
+        let Some(catalogs) = catalogs.as_deref() else {
+            return Err(fs_err!(
+                ErrorCode::InvalidConfig,
+                "Cannot resolve cross-adapter ref '{unique_id}' because catalogs.yml v2 is unavailable"
+            ));
+        };
+        let database = dbt_adapter::catalog_relation::resolve_catalog_database(
+            catalogs,
+            &catalog_ref.catalog_name,
+            consumer_adapter,
+        )
+        .map_err(|error| {
+            fs_err!(
+                ErrorCode::InvalidConfig,
+                "Cannot resolve cross-adapter ref '{unique_id}' through catalog '{}': {error}",
+                catalog_ref.catalog_name
+            )
+        })?;
+        let relation = create_relation(
+            consumer_adapter,
+            database,
+            catalog_ref.schema.clone(),
+            Some(catalog_ref.identifier.clone()),
+            Some(catalog_ref.relation_type),
+            catalog_ref.quoting,
+        )?;
+        Ok(RelationObject::new_with_filter(
+            relation.into(),
+            self.run_filter.clone(),
+            catalog_ref.event_time.clone(),
+        )
+        .into_value())
+    }
+
+    fn catalog_ref(
+        node: &dyn InternalDbtNodeAttributes,
+        adapter_type: AdapterType,
+    ) -> Option<CatalogRef> {
+        let model = node.as_any().downcast_ref::<DbtModel>()?;
+        let catalog_name = model.__model_attr__.catalog_name.as_deref()?;
+        Some(CatalogRef {
+            catalog_name: catalog_name.to_string(),
+            producer_adapter: adapter_type,
+            schema: node.schema(),
+            identifier: node.alias(),
+            relation_type: RelationType::from(node.materialized()),
+            quoting: node.quoting(),
+            event_time: node.event_time(),
+        })
     }
 
     fn push_or_replace_entry(
@@ -350,6 +449,11 @@ impl NodeResolverTracker for NodeResolver {
         let package_name = &node.package_name();
         let model_name = node.name();
         let unique_id = node.unique_id();
+        if let Some(catalog_ref) = Self::catalog_ref(node, adapter_type) {
+            self.catalog_refs.insert(unique_id.clone(), catalog_ref);
+        } else {
+            self.catalog_refs.remove(&unique_id);
+        }
         let (maybe_version, maybe_latest_version) = if node.resource_type() == NodeType::Model {
             (node.version(), node.latest_version())
         } else {
@@ -662,6 +766,26 @@ impl NodeResolverTracker for NodeResolver {
         }
     }
 
+    fn lookup_ref_for_adapter(
+        &self,
+        maybe_package_name: &Option<String>,
+        name: &str,
+        version: &Option<String>,
+        maybe_node_package_name: &Option<String>,
+        consumer_adapter: AdapterType,
+    ) -> FsResult<RefRecord> {
+        let (unique_id, relation, status, deferred_relation) =
+            self.lookup_ref(maybe_package_name, name, version, maybe_node_package_name)?;
+        let relation =
+            self.relation_for_adapter(&unique_id, relation, consumer_adapter, false)?;
+        let deferred_relation = deferred_relation
+            .map(|relation| {
+                self.relation_for_adapter(&unique_id, relation, consumer_adapter, true)
+            })
+            .transpose()?;
+        Ok((unique_id, relation, status, deferred_relation))
+    }
+
     /// Lookup a source by the calling node's package name, source name, and table name
     fn lookup_source(
         &self,
@@ -807,15 +931,16 @@ impl NodeResolverTracker for NodeResolver {
     fn update_ref_with_deferral(
         &mut self,
         node: &dyn InternalDbtNodeAttributes,
-        adapter_type: AdapterType,
+        _adapter_type: AdapterType,
         is_frontier: bool,
     ) -> FsResult<()> {
+        let node_adapter = node.node_adapter();
         if node.resource_type() == NodeType::Function {
             let package_name = node.package_name();
             let function_name = node.name();
             let unique_id = node.unique_id();
             let deferred_function =
-                create_function_object_from_node(adapter_type, node)?.into_value();
+                create_function_object_from_node(node_adapter, node)?.into_value();
 
             let function_entry = self.functions.entry(function_name.clone()).or_default();
             Self::set_deferred_function(function_entry, &unique_id, &deferred_function);
@@ -832,6 +957,12 @@ impl NodeResolverTracker for NodeResolver {
         let package_name = &node.package_name();
         let model_name = node.name();
         let unique_id = node.unique_id();
+        if let Some(catalog_ref) = Self::catalog_ref(node, node_adapter) {
+            self.deferred_catalog_refs
+                .insert(unique_id.clone(), catalog_ref);
+        } else {
+            self.deferred_catalog_refs.remove(&unique_id);
+        }
         let (maybe_version, maybe_latest_version) = if node.resource_type() == NodeType::Model {
             (node.version(), node.latest_version())
         } else {
@@ -839,7 +970,7 @@ impl NodeResolverTracker for NodeResolver {
         };
 
         let deferred_relation = RelationObject::new_with_filter(
-            create_relation_from_node(adapter_type, node, Some(self.run_filter.clone()))?.into(),
+            create_relation_from_node(node_adapter, node, Some(self.run_filter.clone()))?.into(),
             self.run_filter.clone(),
             node.event_time(),
         )
@@ -1429,6 +1560,73 @@ mod tests {
             },
             ..Default::default()
         })
+    }
+
+    #[test]
+    fn catalog_ref_uses_the_consumers_database_namespace() {
+        let yaml: dbt_yaml::Value = dbt_yaml::from_str(
+            r#"
+catalogs:
+  - name: shared
+    type: iceberg_rest
+    table_format: iceberg
+    config:
+      snowflake:
+        catalog_database: SNOWFLAKE_SHARED
+      duckdb:
+        endpoint: https://example.com/catalog
+        warehouse: shared
+        catalog_database: duck-alias
+"#,
+        )
+        .unwrap();
+        let catalogs = DbtCatalogs::new(
+            yaml.as_mapping().unwrap().clone(),
+            yaml.span().clone(),
+        );
+        let mut resolver = NodeResolver {
+            catalogs: Some(Arc::new(catalogs)),
+            ..Default::default()
+        };
+        let mut model = DbtModel {
+            __common_attr__: CommonAttributes {
+                unique_id: "model.test.orders".to_string(),
+                name: "orders".to_string(),
+                package_name: "test".to_string(),
+                ..Default::default()
+            },
+            __base_attr__: NodeBaseAttributes {
+                adapter: AdapterType::Snowflake,
+                database: "SNOWFLAKE_SHARED".to_string(),
+                schema: "analytics".to_string(),
+                alias: "orders".to_string(),
+                materialized: DbtMaterialization::Table,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        model.__model_attr__.catalog_name = Some("shared".to_string());
+        resolver
+            .insert_ref(
+                &model,
+                AdapterType::Snowflake,
+                ModelStatus::Enabled,
+                false,
+            )
+            .unwrap();
+
+        let (_, relation, _, _) = resolver
+            .lookup_ref_for_adapter(
+                &None,
+                "orders",
+                &None,
+                &Some("test".to_string()),
+                AdapterType::DuckDB,
+            )
+            .unwrap();
+        let rendered = relation.to_string();
+        assert!(rendered.contains("duck_alias"), "{rendered}");
+        assert!(!rendered.contains("SNOWFLAKE_SHARED"), "{rendered}");
     }
 
     const PACKAGE_SOURCE_ID: &str = "source.source_consumer.landing.source_feed";

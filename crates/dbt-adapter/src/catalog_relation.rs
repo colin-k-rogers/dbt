@@ -15,8 +15,69 @@ use std::sync::Arc;
 
 use crate::errors::{AdapterError, AdapterErrorKind, AdapterResult};
 use crate::load_catalogs;
+use crate::metadata::duckdb::CatalogSpecDuckDbExt;
 
 mod catalog_relation_v2;
+
+/// Resolve the database/catalog identifier through which an adapter addresses a
+/// logical v2 catalog.
+///
+/// Cross-adapter refs preserve the producer's schema and identifier but replace
+/// its leading component with this consumer-specific value.
+pub fn resolve_catalog_database(
+    catalogs: &DbtCatalogs,
+    catalog_name: &str,
+    adapter_type: AdapterType,
+) -> AdapterResult<String> {
+    let view = catalogs.view_v2().map_err(|error| {
+        AdapterError::new(
+            AdapterErrorKind::Configuration,
+            format!("Could not read catalogs.yml v2: {error}"),
+        )
+    })?;
+    let catalog = view
+        .catalogs
+        .iter()
+        .find(|catalog| catalog.name == catalog_name)
+        .ok_or_else(|| {
+            AdapterError::new(
+                AdapterErrorKind::Configuration,
+                format!("Catalog '{catalog_name}' is not declared in catalogs.yml"),
+            )
+        })?;
+
+    match adapter_type {
+        AdapterType::DuckDB => catalog.resolved_attach_alias().ok_or_else(|| {
+            AdapterError::new(
+                AdapterErrorKind::Configuration,
+                format!("Catalog '{catalog_name}' does not declare a DuckDB config block"),
+            )
+        }),
+        AdapterType::Snowflake | AdapterType::Databricks => {
+            let platform = adapter_type.as_ref();
+            let block = catalog.config_block(platform).ok_or_else(|| {
+                AdapterError::new(
+                    AdapterErrorKind::Configuration,
+                    format!("Catalog '{catalog_name}' does not declare config.{platform}"),
+                )
+            })?;
+            Ok(block
+                .get(YmlValue::from("catalog_database"))
+                .and_then(YmlValue::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .unwrap_or(catalog.name)
+                .to_string())
+        }
+        _ => Err(AdapterError::new(
+            AdapterErrorKind::Configuration,
+            format!(
+                "Catalog relation routing is not supported for adapter '{}'",
+                adapter_type.as_ref()
+            ),
+        )),
+    }
+}
 
 /// How DuckDB must write a table for this relation's catalog / table format.
 ///

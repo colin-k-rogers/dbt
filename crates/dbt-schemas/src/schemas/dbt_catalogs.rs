@@ -250,6 +250,119 @@ impl DbtCatalogs {
             .map(|catalog| catalog.catalog_type))
     }
 
+    /// Validate that a named v2 catalog can carry a physical relation from
+    /// `producer` to `consumer`.
+    ///
+    /// This is deliberately directional: the producer needs write access while
+    /// the consumer only needs read access. Same-adapter edges do not need a
+    /// bridge and are accepted without consulting `catalogs.yml`.
+    pub fn validate_adapter_bridge(
+        &self,
+        name: &str,
+        producer: AdapterType,
+        consumer: AdapterType,
+    ) -> FsResult<()> {
+        if producer == consumer {
+            return Ok(());
+        }
+
+        let view = self.view_v2().map_err(|_| {
+            fs_err!(
+                ErrorCode::InvalidConfig,
+                "Cross-adapter refs require catalogs.yml v2; catalog '{name}' could not be read as a v2 catalog"
+            )
+        })?;
+        let catalog = view
+            .catalogs
+            .iter()
+            .find(|catalog| catalog.name == name)
+            .ok_or_else(|| {
+                fs_err!(
+                    ErrorCode::InvalidConfig,
+                    "Cross-adapter ref names catalog '{name}', which is not declared in catalogs.yml"
+                )
+            })?;
+
+        let peer = match (producer, consumer) {
+            (AdapterType::DuckDB, peer) | (peer, AdapterType::DuckDB) => peer,
+            _ => {
+                return Err(fs_err!(
+                    ErrorCode::InvalidConfig,
+                    "Catalog bridges are currently supported only for edges involving DuckDB; \
+                     '{name}' cannot bridge '{}' to '{}'",
+                    producer.as_ref(),
+                    consumer.as_ref()
+                ));
+            }
+        };
+
+        match (catalog.catalog_type, peer) {
+            (
+                CatalogType::IcebergRest | CatalogType::Horizon,
+                AdapterType::Snowflake,
+            )
+            | (CatalogType::Unity, AdapterType::Snowflake | AdapterType::Databricks) => {}
+            (CatalogType::Glue, _) => {
+                return Err(fs_err!(
+                    ErrorCode::InvalidConfig,
+                    "Catalog '{name}' uses type 'glue'. For a DuckDB bridge, expose Glue through \
+                     Lake Formation's Iceberg REST endpoint and declare type 'iceberg_rest'"
+                ));
+            }
+            (catalog_type, _) => {
+                return Err(fs_err!(
+                    ErrorCode::InvalidConfig,
+                    "Catalog '{name}' of type '{}' cannot bridge '{}' to '{}'",
+                    catalog_type.as_str().to_ascii_lowercase(),
+                    producer.as_ref(),
+                    consumer.as_ref()
+                ));
+            }
+        }
+
+        for adapter_type in [producer, consumer] {
+            let Some(block) = catalog.config_block(adapter_type.as_ref()) else {
+                return Err(fs_err!(
+                    ErrorCode::InvalidConfig,
+                    "Catalog '{name}' must declare config.{} to bridge '{}' to '{}'",
+                    adapter_type.as_ref(),
+                    producer.as_ref(),
+                    consumer.as_ref()
+                ));
+            };
+            if adapter_type != AdapterType::DuckDB
+                && block
+                    .get(yml::Value::from("catalog_database"))
+                    .and_then(|value| value.as_str())
+                    .map(str::trim)
+                    .is_none_or(str::is_empty)
+            {
+                return Err(fs_err!(
+                    ErrorCode::InvalidConfig,
+                    "Catalog '{name}' must declare a non-empty config.{}.catalog_database to \
+                     provide a stable cross-adapter namespace",
+                    adapter_type.as_ref()
+                ));
+            }
+        }
+
+        if producer == AdapterType::DuckDB {
+            let duckdb = catalog
+                .config_block(AdapterType::DuckDB.as_ref())
+                .expect("DuckDB config block checked above");
+            if dbt_common::serde_utils::try_get_bool(duckdb, "read_only")?.unwrap_or(false) {
+                return Err(fs_err!(
+                    ErrorCode::InvalidConfig,
+                    "Catalog '{name}' is read-only for DuckDB, so it cannot carry output from \
+                     DuckDB to '{}'",
+                    consumer.as_ref()
+                ));
+            }
+        }
+
+        Ok(())
+    }
+
     /// Returns `(catalog_name, catalog_database)` for every v2 `iceberg_rest`
     /// catalog that declares a Snowflake `catalog_database` (the linked
     /// database write support is gated on).
