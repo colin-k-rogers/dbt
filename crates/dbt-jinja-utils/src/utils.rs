@@ -1,5 +1,5 @@
-use dbt_adapter::Adapter;
 use dbt_adapter::relation::create_relation;
+use dbt_adapter_core::AdapterType;
 use dbt_common::{ErrorCode, FsError, fs_err};
 use dbt_common::{FsResult, constants::DBT_CTE_PREFIX, error::MacroSpan, stdfs};
 use dbt_frontend_common::{error::CodeLocation, span::Span};
@@ -710,7 +710,7 @@ pub fn clear_template_cache() {
 
 /// Generate a relation name from database, schema, alias
 pub fn generate_relation_name(
-    parse_adapter: Arc<Adapter>,
+    adapter_type: AdapterType,
     database: &str,
     schema: &str,
     identifier: &str,
@@ -718,7 +718,7 @@ pub fn generate_relation_name(
 ) -> FsResult<String> {
     // Create relation using the adapter
     match create_relation(
-        parse_adapter.adapter_type(),
+        adapter_type,
         database.to_owned(),
         schema.to_owned(),
         Some(identifier.to_owned()),
