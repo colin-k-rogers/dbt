@@ -914,19 +914,27 @@ impl CatalogRelation {
         let table_format = catalog.table_format;
 
         let endpoint = get_yaml_str(duckdb, "endpoint").map(|s| s.to_string());
+        let endpoint_type = get_yaml_str(duckdb, "endpoint_type").map(|s| s.to_string());
         let warehouse = get_yaml_str(duckdb, "warehouse").map(|s| s.to_string());
         let secret = get_yaml_str(duckdb, "secret").map(|s| s.to_string());
         let alias = catalog.resolved_attach_alias().unwrap_or_default();
 
-        let Some(endpoint) = endpoint else {
+        if endpoint.is_none() && endpoint_type.is_none() {
             return Err(AdapterError::new(
                 AdapterErrorKind::Configuration,
-                format!("Catalog '{catalog_name}' duckdb config requires 'endpoint'"),
+                format!(
+                    "Catalog '{catalog_name}' duckdb config requires 'endpoint' or 'endpoint_type'"
+                ),
             ));
-        };
+        }
 
         let mut adapter_properties = BTreeMap::new();
-        adapter_properties.insert("endpoint".to_string(), endpoint);
+        if let Some(endpoint) = endpoint {
+            adapter_properties.insert("endpoint".to_string(), endpoint);
+        }
+        if let Some(endpoint_type) = endpoint_type {
+            adapter_properties.insert("endpoint_type".to_string(), endpoint_type);
+        }
         if let Some(warehouse) = warehouse {
             adapter_properties.insert("warehouse".to_string(), warehouse);
         }
@@ -2155,6 +2163,35 @@ catalogs:
         );
         // No secret specified
         assert!(!r.adapter_properties.contains_key("secret"));
+    }
+
+    #[test]
+    fn duckdb_v2_iceberg_rest_lake_formation_builds_relation() {
+        let catalogs = load_catalogs_yaml(
+            r#"
+catalogs:
+  - name: lake_formation
+    type: iceberg_rest
+    table_format: iceberg
+    config:
+      duckdb:
+        endpoint_type: GLUE
+"#,
+        );
+        let conf = json!({ "catalog_name": "lake_formation" });
+        let m = model(AdapterType::DuckDB, conf);
+
+        let r =
+            from_model_config_and_catalogs_v2(AdapterType::DuckDB, &m, Arc::new(catalogs)).unwrap();
+
+        assert_eq!(r.catalog_type, CatalogType::IcebergRest);
+        assert_eq!(
+            r.adapter_properties
+                .get("endpoint_type")
+                .map(|s| s.as_str()),
+            Some("GLUE")
+        );
+        assert!(!r.adapter_properties.contains_key("endpoint"));
     }
 
     #[test]
