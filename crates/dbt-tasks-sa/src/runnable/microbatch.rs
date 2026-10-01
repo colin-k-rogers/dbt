@@ -83,12 +83,15 @@ pub fn extend_microbatch_node_context(
     jinja_context.insert("ref".to_string(), microbatch_ref.clone());
 
     // Replace the source function with one that has microbatch context
-    let microbatch_source = Value::from_object(SourceFunction::new_with_microbatch_context(
-        node_resolver,
-        model.__common_attr__.package_name.clone(),
-        runtime_config.clone().into(),
-        microbatch_ctx,
-    ));
+    let microbatch_source = Value::from_object(
+        SourceFunction::new_with_microbatch_context(
+            node_resolver,
+            model.__common_attr__.package_name.clone(),
+            runtime_config.clone().into(),
+            microbatch_ctx,
+        )
+        .with_consumer_adapter(model.node_adapter()),
+    );
 
     // Insert the microbatch-aware source into context
     jinja_context.insert("source".to_string(), microbatch_source.clone());

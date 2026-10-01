@@ -259,7 +259,7 @@ impl MicrobatchRefContext {
 /// - Package-qualified refs: `ref('package_name', 'model_name')`
 /// - Versioned refs: `ref('model_name', version=1)`
 /// - Microbatch-aware filtering when `microbatch_context` is set
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct RefFunction {
     node_resolver: Arc<dyn NodeResolverTracker>,
     package_name: String,
@@ -343,6 +343,17 @@ impl RefFunction {
     pub fn with_consumer_adapter(mut self, consumer_adapter: AdapterType) -> Self {
         self.consumer_adapter = Some(consumer_adapter);
         self
+    }
+
+    /// Set the node that owns this ref context for phase-aware deferral.
+    pub fn with_current_node_unique_id(mut self, unique_id: String) -> Self {
+        self.current_node_unique_id = unique_id;
+        self
+    }
+
+    #[cfg(test)]
+    pub(crate) fn consumer_binding(&self) -> (Option<AdapterType>, &str) {
+        (self.consumer_adapter, &self.current_node_unique_id)
     }
 
     /// Set the microbatch context on this RefFunction.
@@ -567,13 +578,14 @@ impl Object for RefFunction {
 }
 
 /// Function for resolving source() calls in Jinja templates.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct SourceFunction {
     node_resolver: Arc<dyn NodeResolverTracker>,
     package_name: String,
     runtime_config: Arc<DbtRuntimeConfig>,
     microbatch_context: Option<MicrobatchRefContext>,
     validation_config: DependencyValidationConfig,
+    consumer_adapter: Option<AdapterType>,
 }
 
 impl SourceFunction {
@@ -593,6 +605,7 @@ impl SourceFunction {
             runtime_config,
             microbatch_context: Some(microbatch_context),
             validation_config: DependencyValidationConfig::default(),
+            consumer_adapter: None,
         }
     }
 }
@@ -611,6 +624,7 @@ impl SourceFunction {
             runtime_config,
             microbatch_context: None,
             validation_config: DependencyValidationConfig::default(),
+            consumer_adapter: None,
         }
     }
 
@@ -627,7 +641,19 @@ impl SourceFunction {
             runtime_config,
             microbatch_context: None,
             validation_config,
+            consumer_adapter: None,
         }
+    }
+
+    /// Set the adapter used by the node that invokes this source function.
+    pub fn with_consumer_adapter(mut self, consumer_adapter: AdapterType) -> Self {
+        self.consumer_adapter = Some(consumer_adapter);
+        self
+    }
+
+    #[cfg(test)]
+    pub(crate) fn consumer_adapter(&self) -> Option<AdapterType> {
+        self.consumer_adapter
     }
 
     /// Validate that the referenced source is in the allowed dependencies.
@@ -717,10 +743,18 @@ impl Object for SourceFunction {
                 "source",
             )),
         }?;
-        match self
-            .node_resolver
-            .lookup_source(&self.package_name, &source_name, &table_name)
-        {
+        let resolved_source = match self.consumer_adapter {
+            Some(consumer_adapter) => self.node_resolver.lookup_source_for_adapter(
+                &self.package_name,
+                &source_name,
+                &table_name,
+                consumer_adapter,
+            ),
+            None => self
+                .node_resolver
+                .lookup_source(&self.package_name, &source_name, &table_name),
+        };
+        match resolved_source {
             Ok((unique_id, relation, _)) => {
                 for listener in listeners {
                     listener.on_ref_or_source_resolved(&unique_id);

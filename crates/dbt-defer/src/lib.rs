@@ -626,11 +626,18 @@ fn apply_deferral_to_node<N>(
     deferred_node: &N,
     adapter_type: AdapterType,
     is_frontier: bool,
-) -> FsResult<()>
+) -> FsResult<AdapterType>
 where
     N: InternalDbtNode + InternalDbtNodeAttributes + Clone,
 {
-    node_resolver.update_ref_with_deferral(deferred_node, adapter_type, is_frontier)?;
+    // State manifests written before per-node adapters were persisted report
+    // the manifest's default adapter here. The matching local node is the
+    // authoritative source for the producer's execution adapter.
+    let producer_adapter = local_nodes
+        .get(unique_id)
+        .map(|node| node.node_adapter())
+        .unwrap_or(adapter_type);
+    node_resolver.update_ref_with_deferral(deferred_node, producer_adapter, is_frontier)?;
     if should_defer_base_attr(deferred_node, is_frontier)
         && let Some(node) = local_nodes.get_mut(unique_id)
     {
@@ -640,7 +647,7 @@ where
         base.database = deferred_base.database.clone();
         base.schema = deferred_base.schema.clone();
     }
-    Ok(())
+    Ok(producer_adapter)
 }
 
 fn update_refs_and_sources_with_deferral(
@@ -662,7 +669,7 @@ fn update_refs_and_sources_with_deferral(
         let current_relation = resolver_state
             .nodes
             .get_node(dep_id)
-            .and_then(|node| create_relation_from_node(adapter.adapter_type(), node, None).ok())
+            .and_then(|node| create_relation_from_node(node.node_adapter(), node, None).ok())
             .map(Arc::<dyn BaseRelation>::from);
 
         // Try to find the node in any of the defer collections and apply the
@@ -671,7 +678,7 @@ fn update_refs_and_sources_with_deferral(
         // `__base_attr__.{database,schema}`. Per-kind rules live on
         // `should_defer_base_attr`'s doc comment.
         let relation = if let Some(defer_model) = defer_nodes.models.get(dep_id) {
-            apply_deferral_to_node(
+            let producer_adapter = apply_deferral_to_node(
                 node_resolver,
                 &mut resolver_state.nodes.models,
                 dep_id,
@@ -679,9 +686,9 @@ fn update_refs_and_sources_with_deferral(
                 adapter.adapter_type(),
                 is_frontier,
             )?;
-            create_relation_from_node(adapter.adapter_type(), defer_model.as_ref(), None)?
+            create_relation_from_node(producer_adapter, defer_model.as_ref(), None)?
         } else if let Some(defer_seed) = defer_nodes.seeds.get(dep_id) {
-            apply_deferral_to_node(
+            let producer_adapter = apply_deferral_to_node(
                 node_resolver,
                 &mut resolver_state.nodes.seeds,
                 dep_id,
@@ -689,9 +696,9 @@ fn update_refs_and_sources_with_deferral(
                 adapter.adapter_type(),
                 is_frontier,
             )?;
-            create_relation_from_node(adapter.adapter_type(), defer_seed.as_ref(), None)?
+            create_relation_from_node(producer_adapter, defer_seed.as_ref(), None)?
         } else if let Some(defer_snapshot) = defer_nodes.snapshots.get(dep_id) {
-            apply_deferral_to_node(
+            let producer_adapter = apply_deferral_to_node(
                 node_resolver,
                 &mut resolver_state.nodes.snapshots,
                 dep_id,
@@ -699,9 +706,9 @@ fn update_refs_and_sources_with_deferral(
                 adapter.adapter_type(),
                 is_frontier,
             )?;
-            create_relation_from_node(adapter.adapter_type(), defer_snapshot.as_ref(), None)?
+            create_relation_from_node(producer_adapter, defer_snapshot.as_ref(), None)?
         } else if let Some(defer_function) = defer_nodes.functions.get(dep_id) {
-            apply_deferral_to_node(
+            let producer_adapter = apply_deferral_to_node(
                 node_resolver,
                 &mut resolver_state.nodes.functions,
                 dep_id,
@@ -709,7 +716,7 @@ fn update_refs_and_sources_with_deferral(
                 adapter.adapter_type(),
                 is_frontier,
             )?;
-            create_relation_from_node(adapter.adapter_type(), defer_function.as_ref(), None)?
+            create_relation_from_node(producer_adapter, defer_function.as_ref(), None)?
         } else {
             continue;
         };
@@ -948,28 +955,41 @@ pub async fn update_ref_lookups_from_state(
     } else {
         filter_by_relation_availability(&candidates, resolver_state, adapter).await
     };
+    let producer_adapters: HashMap<_, _> = to_defer
+        .iter()
+        .filter_map(|uid| {
+            resolver_state
+                .nodes
+                .get_node(uid)
+                .map(|node| (uid.clone(), node.node_adapter()))
+        })
+        .collect();
 
     let node_resolver = Arc::get_mut(&mut resolver_state.node_resolver)
         .expect("Expected mutable reference to node_resolver for update_ref_lookups_from_state");
 
     for (uid, node) in &defer_nodes.models {
         if to_defer.contains(uid) {
-            node_resolver.update_ref_with_deferral(node.as_ref(), adapter_type, true)?;
+            let producer_adapter = producer_adapters.get(uid).copied().unwrap_or(adapter_type);
+            node_resolver.update_ref_with_deferral(node.as_ref(), producer_adapter, true)?;
         }
     }
     for (uid, node) in &defer_nodes.seeds {
         if to_defer.contains(uid) {
-            node_resolver.update_ref_with_deferral(node.as_ref(), adapter_type, true)?;
+            let producer_adapter = producer_adapters.get(uid).copied().unwrap_or(adapter_type);
+            node_resolver.update_ref_with_deferral(node.as_ref(), producer_adapter, true)?;
         }
     }
     for (uid, node) in &defer_nodes.snapshots {
         if to_defer.contains(uid) {
-            node_resolver.update_ref_with_deferral(node.as_ref(), adapter_type, true)?;
+            let producer_adapter = producer_adapters.get(uid).copied().unwrap_or(adapter_type);
+            node_resolver.update_ref_with_deferral(node.as_ref(), producer_adapter, true)?;
         }
     }
     for (uid, node) in &defer_nodes.functions {
         if to_defer.contains(uid) {
-            node_resolver.update_ref_with_deferral(node.as_ref(), adapter_type, true)?;
+            let producer_adapter = producer_adapters.get(uid).copied().unwrap_or(adapter_type);
+            node_resolver.update_ref_with_deferral(node.as_ref(), producer_adapter, true)?;
         }
     }
     Ok(())
@@ -1055,7 +1075,7 @@ mod tests {
     };
     use dbt_schemas::schemas::project::SavedQueryConfig;
     use dbt_schemas::schemas::{CommonAttributes, NodeBaseAttributes};
-    use dbt_schemas::state::NodeResolverTracker;
+    use dbt_schemas::state::{ModelStatus, NodeResolverTracker};
 
     fn create_common_attr(name: &str) -> CommonAttributes {
         CommonAttributes {
@@ -1140,6 +1160,38 @@ mod tests {
             },
             ..Default::default()
         })
+    }
+
+    #[test]
+    fn deferral_uses_the_local_nodes_adapter_for_legacy_state() {
+        let unique_id = "model.test.orders";
+        let mut local_node = (*make_underlying_model(unique_id, "orders", "analytics")).clone();
+        local_node.__base_attr__.adapter = AdapterType::DuckDB;
+        let mut deferred_node = local_node.clone();
+        deferred_node.__base_attr__.adapter = AdapterType::Snowflake;
+
+        let mut resolver = NodeResolver::default();
+        resolver
+            .insert_ref(
+                &local_node,
+                AdapterType::DuckDB,
+                ModelStatus::Enabled,
+                false,
+            )
+            .unwrap();
+        let mut local_nodes = BTreeMap::from([(unique_id.to_string(), Arc::new(local_node))]);
+
+        let producer_adapter = apply_deferral_to_node(
+            &mut resolver,
+            &mut local_nodes,
+            unique_id,
+            &deferred_node,
+            AdapterType::Snowflake,
+            true,
+        )
+        .unwrap();
+
+        assert_eq!(producer_adapter, AdapterType::DuckDB);
     }
 
     fn make_saved_query(
@@ -1567,10 +1619,8 @@ mod tests {
         sorted_nodes: &[String],
         frontier_nodes: &BTreeSet<String>,
     ) -> NodeResolver {
-        let mut resolver = NodeResolver {
-            compile_or_test,
-            ..Default::default()
-        };
+        let mut resolver = NodeResolver::default();
+        resolver.compile_or_test = compile_or_test;
 
         let mut node_introspections = HashMap::new();
         let mut has_analyzed_schema = HashSet::new();

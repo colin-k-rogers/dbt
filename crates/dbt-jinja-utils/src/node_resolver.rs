@@ -101,6 +101,9 @@ pub struct NodeResolver {
     pub refs: BTreeMap<String, Vec<RefRecord>>,
     /// Map of (package_name.source_name.name ) to (unique_id, relation, status)
     pub sources: BTreeMap<String, Vec<(String, MinijinjaValue, ModelStatus)>>,
+    /// Source metadata by unique id, retained so a source relation can be
+    /// reconstructed for the adapter executing its consumer.
+    source_nodes: HashMap<String, DbtSource>,
     /// Map of function_name (either {project}.{function_name}, {function_name}) to
     /// (unique_id, function_object, status). The function object may be replaced
     /// with its deferred version during defer hydration.
@@ -223,6 +226,7 @@ impl NodeResolver {
         self.catalog_refs.extend(source.catalog_refs.clone());
         self.deferred_catalog_refs
             .extend(source.deferred_catalog_refs.clone());
+        self.source_nodes.extend(source.source_nodes.clone());
 
         for (key, source_entries) in source.refs {
             let target_entries = self.refs.entry(key).or_default();
@@ -607,6 +611,8 @@ impl NodeResolverTracker for NodeResolver {
             source.deprecated_config.event_time.clone(),
         )
         .into_value();
+        self.source_nodes
+            .insert(source.common().unique_id.clone(), source.clone());
 
         self.sources
             .entry(format!(
@@ -843,6 +849,46 @@ impl NodeResolverTracker for NodeResolver {
         }
     }
 
+    fn lookup_source_for_adapter(
+        &self,
+        node_package_name: &str,
+        source_name: &str,
+        table_name: &str,
+        consumer_adapter: AdapterType,
+    ) -> FsResult<(String, MinijinjaValue, ModelStatus)> {
+        let (unique_id, relation, status) =
+            self.lookup_source(node_package_name, source_name, table_name)?;
+        let Some(source) = self.source_nodes.get(&unique_id) else {
+            return Ok((unique_id, relation, status));
+        };
+        let Some(relation_object) = relation
+            .as_object()
+            .and_then(|object| object.downcast_ref::<RelationObject>())
+        else {
+            return Ok((unique_id, relation, status));
+        };
+        let base_relation = relation_object.inner();
+        if base_relation.adapter_type() == consumer_adapter {
+            return Ok((unique_id, relation, status));
+        }
+
+        let relation = create_relation_from_source(
+            consumer_adapter,
+            base_relation.database().unwrap_or_default().to_string(),
+            base_relation.schema().unwrap_or_default().to_string(),
+            base_relation.identifier().unwrap_or_default().to_string(),
+            base_relation.quote_policy(),
+            source,
+        )?;
+        let relation = RelationObject::new_with_filter(
+            relation.into(),
+            self.run_filter.clone(),
+            source.deprecated_config.event_time.clone(),
+        )
+        .into_value();
+        Ok((unique_id, relation, status))
+    }
+
     /// Lookup a function by package name and function name
     fn lookup_function(
         &self,
@@ -928,16 +974,15 @@ impl NodeResolverTracker for NodeResolver {
     fn update_ref_with_deferral(
         &mut self,
         node: &dyn InternalDbtNodeAttributes,
-        _adapter_type: AdapterType,
+        adapter_type: AdapterType,
         is_frontier: bool,
     ) -> FsResult<()> {
-        let node_adapter = node.node_adapter();
         if node.resource_type() == NodeType::Function {
             let package_name = node.package_name();
             let function_name = node.name();
             let unique_id = node.unique_id();
             let deferred_function =
-                create_function_object_from_node(node_adapter, node)?.into_value();
+                create_function_object_from_node(adapter_type, node)?.into_value();
 
             let function_entry = self.functions.entry(function_name.clone()).or_default();
             Self::set_deferred_function(function_entry, &unique_id, &deferred_function);
@@ -954,7 +999,7 @@ impl NodeResolverTracker for NodeResolver {
         let package_name = &node.package_name();
         let model_name = node.name();
         let unique_id = node.unique_id();
-        if let Some(catalog_ref) = Self::catalog_ref(node, node_adapter) {
+        if let Some(catalog_ref) = Self::catalog_ref(node, adapter_type) {
             self.deferred_catalog_refs
                 .insert(unique_id.clone(), catalog_ref);
         } else {
@@ -967,7 +1012,7 @@ impl NodeResolverTracker for NodeResolver {
         };
 
         let deferred_relation = RelationObject::new_with_filter(
-            create_relation_from_node(node_adapter, node, Some(self.run_filter.clone()))?.into(),
+            create_relation_from_node(adapter_type, node, Some(self.run_filter.clone()))?.into(),
             self.run_filter.clone(),
             node.event_time(),
         )
@@ -1616,6 +1661,129 @@ catalogs:
         let rendered = relation.to_string();
         assert!(rendered.contains("duck_shared"), "{rendered}");
         assert!(!rendered.contains("SNOWFLAKE_SHARED"), "{rendered}");
+    }
+
+    #[test]
+    fn deferred_catalog_ref_uses_the_supplied_producer_adapter() {
+        let yaml: dbt_yaml::Value = dbt_yaml::from_str(
+            r#"
+catalogs:
+  - name: shared
+    type: iceberg_rest
+    table_format: iceberg
+    config:
+      snowflake:
+        catalog_database: SNOWFLAKE_SHARED
+      duckdb:
+        endpoint: https://example.com/catalog
+        warehouse: shared
+        catalog_database: duck_shared
+"#,
+        )
+        .unwrap();
+        let catalogs = DbtCatalogs::new(yaml.as_mapping().unwrap().clone(), yaml.span().clone());
+        let mut resolver = NodeResolver {
+            catalogs: Some(Arc::new(catalogs)),
+            ..Default::default()
+        };
+        // Older state manifests report the project-default adapter even when
+        // the node actually ran on DuckDB.
+        let mut state_model = DbtModel {
+            __common_attr__: CommonAttributes {
+                unique_id: "model.test.orders".to_string(),
+                name: "orders".to_string(),
+                package_name: "test".to_string(),
+                ..Default::default()
+            },
+            __base_attr__: NodeBaseAttributes {
+                adapter: AdapterType::Snowflake,
+                database: "duck_shared".to_string(),
+                schema: "analytics".to_string(),
+                alias: "orders".to_string(),
+                materialized: DbtMaterialization::Table,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        state_model.__model_attr__.catalog_name = Some("shared".to_string());
+        resolver
+            .insert_ref(
+                &state_model,
+                AdapterType::Snowflake,
+                ModelStatus::Enabled,
+                false,
+            )
+            .unwrap();
+        resolver
+            .update_ref_with_deferral(&state_model, AdapterType::DuckDB, true)
+            .unwrap();
+        assert_eq!(
+            resolver.deferred_catalog_refs["model.test.orders"].producer_adapter,
+            AdapterType::DuckDB
+        );
+        assert_eq!(
+            dbt_adapter::catalog_relation::resolve_catalog_database(
+                resolver.catalogs.as_deref().unwrap(),
+                "shared",
+                AdapterType::Snowflake,
+            )
+            .unwrap(),
+            "SNOWFLAKE_SHARED"
+        );
+
+        let (_, _, _, deferred_relation) = resolver
+            .lookup_ref_for_adapter(
+                &None,
+                "orders",
+                &None,
+                &Some("test".to_string()),
+                AdapterType::Snowflake,
+            )
+            .unwrap();
+        let rendered = deferred_relation
+            .expect("deferred lookup should preserve the deferred relation")
+            .to_string();
+        assert!(rendered.contains("SNOWFLAKE_SHARED"), "{rendered}");
+        assert!(!rendered.contains("duck_shared"), "{rendered}");
+    }
+
+    #[test]
+    fn source_relation_uses_the_consumers_adapter() {
+        let mut resolver = NodeResolver::default();
+        let mut source = DbtSource {
+            __common_attr__: CommonAttributes {
+                unique_id: "source.test.raw.events".to_string(),
+                name: "events".to_string(),
+                package_name: "test".to_string(),
+                ..Default::default()
+            },
+            __base_attr__: NodeBaseAttributes {
+                adapter: AdapterType::Snowflake,
+                database: "raw_db".to_string(),
+                schema: "raw".to_string(),
+                alias: "events".to_string(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        source.__source_attr__.source_name = "raw".to_string();
+        resolver
+            .insert_source(
+                "test",
+                &source,
+                AdapterType::Snowflake,
+                ModelStatus::Enabled,
+            )
+            .unwrap();
+
+        let (_, relation, _) = resolver
+            .lookup_source_for_adapter("test", "raw", "events", AdapterType::DuckDB)
+            .unwrap();
+        let relation = relation
+            .as_object()
+            .and_then(|object| object.downcast_ref::<RelationObject>())
+            .expect("source lookup should return a relation");
+        assert_eq!(relation.inner().adapter_type(), AdapterType::DuckDB);
     }
 
     const PACKAGE_SOURCE_ID: &str = "source.source_consumer.landing.source_feed";

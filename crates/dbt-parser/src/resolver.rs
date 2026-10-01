@@ -1468,6 +1468,11 @@ fn validate_multi_adapter_dependencies(
         let Some(producer) = nodes.get_node(producer_id) else {
             continue;
         };
+        // Sources describe external data and do not execute on an adapter.
+        // Their relation is rendered for the consuming node's adapter.
+        if producer.resource_type() == NodeType::Source {
+            continue;
+        }
         let producer_adapter = producer.node_adapter();
         if producer_adapter == consumer_adapter
             || (producer_adapter != AdapterType::DuckDB && consumer_adapter != AdapterType::DuckDB)
@@ -2532,6 +2537,54 @@ catalogs:
             .is_ok(),
             "a declared Iceberg REST catalog carries the toggled edge"
         );
+    }
+
+    #[test]
+    fn duckdb_consumers_can_depend_on_sources() {
+        use std::sync::Arc;
+
+        use dbt_adapter_core::AdapterType;
+        use dbt_schemas::schemas::common::DbtMaterialization;
+        use dbt_schemas::schemas::{CommonAttributes, DbtModel, DbtSource, Nodes};
+
+        use super::check_multi_adapter_catalog_edges;
+
+        let source_id = "source.test.raw.events";
+        let mut source = DbtSource {
+            __common_attr__: CommonAttributes {
+                unique_id: source_id.to_string(),
+                name: "events".to_string(),
+                package_name: "test".to_string(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        source.__base_attr__.adapter = AdapterType::Snowflake;
+
+        let mut consumer = DbtModel {
+            __common_attr__: CommonAttributes {
+                unique_id: "model.test.consumer".to_string(),
+                name: "consumer".to_string(),
+                package_name: "test".to_string(),
+                language: Some("sql".to_string()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        consumer.__base_attr__.adapter = AdapterType::DuckDB;
+        consumer.__base_attr__.materialized = DbtMaterialization::Table;
+        consumer.__base_attr__.depends_on.nodes = vec![source_id.to_string()];
+
+        let mut nodes = Nodes::default();
+        nodes
+            .sources
+            .insert(source_id.to_string(), Arc::new(source));
+        nodes.models.insert(
+            consumer.__common_attr__.unique_id.clone(),
+            Arc::new(consumer),
+        );
+
+        assert!(check_multi_adapter_catalog_edges(&nodes, None).is_ok());
     }
 
     #[test]

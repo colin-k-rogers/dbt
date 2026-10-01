@@ -525,6 +525,18 @@ pub trait NodeResolverTracker: fmt::Debug + Send + Sync {
         source_name: &str,
         table_name: &str,
     ) -> FsResult<(String, MinijinjaValue, ModelStatus)>;
+    /// Resolve a source relation using the quoting and relation behavior of
+    /// the adapter executing its consumer. Sources are declarations of
+    /// external data and do not themselves execute on the target default.
+    fn lookup_source_for_adapter(
+        &self,
+        node_package_name: &str,
+        source_name: &str,
+        table_name: &str,
+        _consumer_adapter: AdapterType,
+    ) -> FsResult<(String, MinijinjaValue, ModelStatus)> {
+        self.lookup_source(node_package_name, source_name, table_name)
+    }
     fn lookup_function(
         &self,
         target_package: &Option<String>,
