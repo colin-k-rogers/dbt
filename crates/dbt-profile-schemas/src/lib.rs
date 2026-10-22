@@ -80,7 +80,11 @@ impl ProfileSetup {
                 Ok(DbConfig::DuckDB(c1))
             }
             MotherDuck => {
-                todo!("setup_motherduck_profile")
+                let _c0 = unwrap_db_config!(MotherDuck);
+                Err(fs_err!(
+                    ErrorCode::InvalidArgument,
+                    "Interactive MotherDuck profile setup is not yet implemented."
+                ))
             }
             Postgres => {
                 let c0 = unwrap_db_config!(Postgres);
