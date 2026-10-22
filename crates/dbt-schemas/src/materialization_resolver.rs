@@ -696,6 +696,39 @@ mod per_node_dialect_tests {
     use super::tests_support::*;
     use super::*;
 
+    #[test]
+    fn motherduck_inherits_duckdb_materialization() {
+        let resolver = resolver_with(
+            vec![build_macro("materialization_table_duckdb", "dbt_duckdb")],
+            "my_project",
+        );
+
+        assert_eq!(
+            resolver
+                .find_materialization_macro_by_name("table", AdapterType::MotherDuck)
+                .unwrap(),
+            "dbt_duckdb.materialization_table_duckdb"
+        );
+    }
+
+    #[test]
+    fn motherduck_materialization_override_wins_over_duckdb() {
+        let resolver = resolver_with(
+            vec![
+                build_macro("materialization_table_motherduck", "dbt_motherduck"),
+                build_macro("materialization_table_duckdb", "dbt_duckdb"),
+            ],
+            "my_project",
+        );
+
+        assert_eq!(
+            resolver
+                .find_materialization_macro_by_name("table", AdapterType::MotherDuck)
+                .unwrap(),
+            "dbt_motherduck.materialization_table_motherduck"
+        );
+    }
+
     /// A node that selected a different adapter must resolve that adapter's
     /// materialization, not the target default's. Both macros live in internal
     /// packages, so only the dialect distinguishes them.

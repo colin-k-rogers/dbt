@@ -8,6 +8,7 @@ mod databricks_metadata;
 mod delete_insert;
 mod duckdb;
 mod equals;
+mod motherduck;
 mod multi_adapter;
 mod persist_docs;
 mod python;
