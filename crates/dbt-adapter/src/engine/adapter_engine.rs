@@ -281,6 +281,13 @@ pub(crate) fn adbc_execute_with_options(
 
     let adapter_type = engine.adapter_type();
     let mut options = options;
+    match adapter_type {
+        AdapterType::MotherDuck => options.push((
+            dbt_adbc::postgres::USE_COPY.to_string(),
+            OptionValue::String("false".to_string()),
+        )),
+        _ => {}
+    }
     match (state, adapter_type) {
         (_, AdapterType::Databricks) => QueryTags::from_state(state)?
             .unwrap_or_default()
@@ -452,9 +459,12 @@ pub(crate) fn adbc_execute_with_options(
             return Ok((schema, Vec::new(), rows_affected));
         }
 
-        // Redshift-only: other adapters need execute()'s schema metadata
-        // (query_id, BigQuery row counts) that this path drops.
-        if adapter_type == AdapterType::Redshift && !fetch {
+        // These drivers report DML counts directly from execute_update().
+        // Other adapters need execute()'s schema metadata or result rows.
+        if matches!(
+            (adapter_type, fetch),
+            (AdapterType::Redshift | AdapterType::MotherDuck, false)
+        ) {
             let rows_affected = stmt.execute_update()?;
             token.check_cancellation()?;
             return Ok((Arc::new(Schema::empty()), Vec::new(), rows_affected));
