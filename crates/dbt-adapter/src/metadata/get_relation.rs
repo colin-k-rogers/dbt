@@ -1004,18 +1004,32 @@ fn duckdb_get_relation(
         }
     }
 
-    // Query INFORMATION_SCHEMA.TABLES for relation metadata
-    // DuckDB's table_type values: BASE TABLE, VIEW, LOCAL TEMPORARY
-    let sql = format!(
-        r#"
+    // MotherDuck's PostgreSQL endpoint executes DuckDB SQL but exposes a
+    // PostgreSQL-shaped information_schema, so use DuckDB metadata functions.
+    let sql = match adapter.adapter_type() {
+        AdapterType::MotherDuck => crate::metadata::duckdb::motherduck_get_relation_sql(
+            adapter.quoting(),
+            database,
+            schema,
+            identifier,
+        ),
+        _ => {
+            // DuckDB's table_type values: BASE TABLE, VIEW, LOCAL TEMPORARY
+            format!(
+                r#"
             SELECT table_type as type
             FROM information_schema.tables
             WHERE table_schema = '{}'
               AND table_name = '{}'
         "#,
-        dbt_adapter_sql::ident::escape_string_literal(&query_schema, AdapterType::DuckDB),
-        dbt_adapter_sql::ident::escape_string_literal(&query_identifier, AdapterType::DuckDB),
-    );
+                dbt_adapter_sql::ident::escape_string_literal(&query_schema, AdapterType::DuckDB),
+                dbt_adapter_sql::ident::escape_string_literal(
+                    &query_identifier,
+                    AdapterType::DuckDB,
+                ),
+            )
+        }
+    };
 
     let batch = adapter
         .engine()
