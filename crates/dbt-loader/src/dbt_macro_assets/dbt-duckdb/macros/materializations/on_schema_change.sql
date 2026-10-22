@@ -1,9 +1,8 @@
 {# DuckDB-specific schema change detection for incremental models.
 
-   For SQL models the temp table does not exist at schema-check time (it is
-   batched into a multi-statement execute together with the strategy DML), so
-   we introspect source columns via get_column_schema_from_query(compiled_code)
-   instead of adapter.get_columns_in_relation(source_relation).
+   Local SQL models batch temp-table creation with the strategy DML, so the
+   temp table does not exist at schema-check time. Introspect SQL source columns
+   from compiled_code consistently for local and endpoint-backed DuckDB.
 
    For Python models the temp table has already been materialised by a prior
    statement() call, so the default adapter.get_columns_in_relation path works. #}

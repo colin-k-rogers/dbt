@@ -2,7 +2,7 @@
   {%- call statement('create_schema') -%}
     {% set sql %}
         select type from duckdb_databases()
-        where lower(database_name)='{{ relation.database | lower }}'
+        where lower(database_name)='{{ relation.database | lower | replace("'", "''") }}'
         and type='sqlite'
     {% endset %}
     {% set results = run_query(sql) %}
@@ -30,7 +30,7 @@
     select schema_name
     from system.information_schema.schemata
     {% if database is not none %}
-    where lower(catalog_name) = '{{ database | lower }}'
+    where lower(catalog_name) = '{{ database | lower | replace("'", "''") }}'
     {% endif %}
   {% endset %}
   {{ return(run_query(sql)) }}
@@ -40,8 +40,8 @@
   {% set sql -%}
         select count(*)
         from system.information_schema.schemata
-        where lower(schema_name) = '{{ schema | lower }}'
-        and lower(catalog_name) = '{{ information_schema.database | lower }}'
+        where lower(schema_name) = '{{ schema | lower | replace("'", "''") }}'
+        and lower(catalog_name) = '{{ information_schema.database | lower | replace("'", "''") }}'
   {%- endset %}
   {{ return(run_query(sql)) }}
 {% endmacro %}
@@ -188,12 +188,12 @@ def materialize(df, con):
           numeric_scale
 
       from system.information_schema.columns
-      where table_name = '{{ relation.identifier }}'
+      where table_name = '{{ relation.identifier | replace("'", "''") }}'
       {% if relation.schema %}
-      and lower(table_schema) = '{{ relation.schema | lower }}'
+      and lower(table_schema) = '{{ relation.schema | lower | replace("'", "''") }}'
       {% endif %}
       {% if relation.database %}
-      and lower(table_catalog) = '{{ relation.database | lower }}'
+      and lower(table_catalog) = '{{ relation.database | lower | replace("'", "''") }}'
       {% endif %}
       order by ordinal_position
 
@@ -209,7 +209,7 @@ def materialize(df, con):
 {% macro duckdb__list_relations_without_caching(schema_relation) %}
   {% call statement('list_relations_without_caching', fetch_result=True) -%}
     select
-      '{{ schema_relation.database }}' as database,
+      '{{ schema_relation.database | replace("'", "''") }}' as database,
       table_name as name,
       table_schema as schema,
       CASE table_type
@@ -218,8 +218,8 @@ def materialize(df, con):
         WHEN 'LOCAL TEMPORARY' THEN 'table'
         END as type
     from system.information_schema.tables
-    where lower(table_schema) = '{{ schema_relation.schema | lower }}'
-    and lower(table_catalog) = '{{ schema_relation.database | lower }}'
+    where lower(table_schema) = '{{ schema_relation.schema | lower | replace("'", "''") }}'
+    and lower(table_catalog) = '{{ schema_relation.database | lower | replace("'", "''") }}'
   {% endcall %}
   {{ return(load_result('list_relations_without_caching').table) }}
 {% endmacro %}
@@ -339,8 +339,8 @@ def materialize(df, con):
   {% call statement('get_indexes_on_relation', fetch_result=True) %}
     SELECT index_name
     FROM duckdb_indexes()
-    WHERE schema_name = '{{ relation.schema }}'
-      AND table_name = '{{ relation.identifier }}'
+    WHERE schema_name = '{{ relation.schema | replace("'", "''") }}'
+      AND table_name = '{{ relation.identifier | replace("'", "''") }}'
   {% endcall %}
 
   {% set results = load_result('get_indexes_on_relation').table %}
@@ -355,8 +355,8 @@ def materialize(df, con):
   {% call statement('verify_indexes_dropped', fetch_result=True) %}
     SELECT COUNT(*) as remaining_indexes
     FROM duckdb_indexes()
-    WHERE schema_name = '{{ relation.schema }}'
-      AND table_name = '{{ relation.identifier }}'
+    WHERE schema_name = '{{ relation.schema | replace("'", "''") }}'
+      AND table_name = '{{ relation.identifier | replace("'", "''") }}'
   {% endcall %}
   {% set verify_results = load_result('verify_indexes_dropped').table %}
 {%- endmacro %}
