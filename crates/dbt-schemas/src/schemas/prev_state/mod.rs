@@ -743,6 +743,10 @@ impl StateArtifacts {
             | NodeType::SavedQuery
             | NodeType::Check => !current_node.has_same_config(previous_node, adapter_type),
 
+            // Plugin nodes are not written to the manifest, so there is never a previous node to
+            // compare, and `state:` methods never select them. Listed for exhaustiveness.
+            NodeType::Plugin => !current_node.has_same_config(previous_node, adapter_type),
+
             // Never returned by any `InternalDbtNode::resource_type()` impl (see nodes.rs) —
             // `DocsMacro`/`Operation` describe non-node telemetry concepts and `Unspecified` is a
             // protobuf default. Listed only for match exhaustiveness; treated like Approach B if
@@ -2560,8 +2564,14 @@ mod tests {
                         pre_clone: None,
                         execute_hooks_on_any_reuse: None,
                         compare_unrendered_code: None,
+                        ignore_external_modifications: None,
                     })
                 }),
+            ),
+            (
+                "table_format",
+                ExcludeKind::Relevant,
+                Box::new(|n| n.deprecated_config.table_format = Some("iceberg".to_string())),
             ),
             // --- parity-excludes: dbt-core's `CompareBehavior.Exclude` on `NodeAndTestConfig` ---
             (
@@ -2673,7 +2683,7 @@ mod tests {
             (
                 "begin",
                 ExcludeKind::Relevant,
-                Box::new(|n| n.deprecated_config.begin = Some("2024-01-01".to_string())),
+                Box::new(|n| n.deprecated_config.begin = dbt_yaml::Timestamp::parse("2024-01-01")),
             ),
             (
                 "persist_docs",
@@ -2835,6 +2845,7 @@ mod tests {
                         pre_clone: None,
                         execute_hooks_on_any_reuse: None,
                         compare_unrendered_code: None,
+                        ignore_external_modifications: None,
                     })
                 }),
             ),
