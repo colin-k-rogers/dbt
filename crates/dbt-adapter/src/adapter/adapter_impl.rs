@@ -1216,9 +1216,10 @@ impl AdapterImpl {
                 // See: https://github.com/dbt-labs/dbt-core/issues/14631
                 self.list_schemas_via_adbc(state, database)
             }
-            Snowflake | Databricks | Redshift | Spark | DuckDB | MotherDuck | Postgres
-            | Salesforce | Fabric | ClickHouse | Exasol | Athena | Starburst | Trino
-            | Datafusion | Dremio | Oracle | LakeCompute | Bigquery => {
+            MotherDuck => metadata::duckdb::motherduck_list_schemas(self, state, database),
+            Snowflake | Databricks | Redshift | Spark | DuckDB | Postgres | Salesforce | Fabric
+            | ClickHouse | Exasol | Athena | Starburst | Trino | Datafusion | Dremio | Oracle
+            | LakeCompute | Bigquery => {
                 use crate::macro_exec::execute_macro_wrapper;
                 use minijinja::value::{Kwargs, Value};
 
@@ -1760,6 +1761,17 @@ impl AdapterImpl {
             if let Some(exists) = self.schema_exists_from_trace(state, database, schema) {
                 return Ok(Value::from(exists));
             }
+        }
+
+        match self.adapter_type() {
+            MotherDuck => {
+                let exists = self
+                    .list_schemas(state, database)?
+                    .iter()
+                    .any(|candidate| candidate.eq_ignore_ascii_case(schema));
+                return Ok(Value::from(exists));
+            }
+            _ => {}
         }
 
         // Spark (Hive metastore) has no ANSI `information_schema`
@@ -2315,6 +2327,7 @@ impl AdapterImpl {
             // TODO: Should we add the schema that was fetched here to the schema cache
             // to avoid further remote lookups?
             Bigquery => self.bigquery_get_columns_in_relation_via_adbc(state, relation),
+            MotherDuck => metadata::duckdb::motherduck_relation_columns(self, state, relation),
             _ => self.get_columns_in_relation_via_macro(state, relation),
         }
     }
@@ -3946,6 +3959,12 @@ impl AdapterImpl {
                         Column::new(self.adapter_type(), name, type_text, None, None, None)
                     })
                     .collect())
+            }
+            Impl(MotherDuck, engine) => {
+                let describe_sql = metadata::duckdb::motherduck_describe_query_sql(sql);
+                let batch =
+                    engine.execute(Some(state), conn.as_mut(), ctx, &describe_sql, token)?;
+                metadata::duckdb::columns_from_duckdb_describe(MotherDuck, &batch)
             }
             Impl(_, engine) => {
                 let (_, table) = self.execute_inner(
