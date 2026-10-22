@@ -333,6 +333,16 @@ pub(crate) fn dispatch_search_packages(
     }
 }
 
+/// Returns the parent adapter used for macro inheritance.
+pub fn get_parent_adapter(dialect: &str) -> Option<&'static str> {
+    match dialect {
+        "redshift" => Some("postgres"),
+        "databricks" => Some("spark"),
+        "lakecompute" | "motherduck" => Some("duckdb"),
+        _ => None,
+    }
+}
+
 /// Helper method to get adapter prefixes including parents
 pub fn get_adapter_prefixes(dialect: &str) -> Vec<String> {
     let mut prefixes = Vec::new();
@@ -340,15 +350,8 @@ pub fn get_adapter_prefixes(dialect: &str) -> Vec<String> {
     // Current adapter
     prefixes.push(dialect.to_string());
 
-    // Add parent adapters
-    match dialect {
-        "redshift" => prefixes.push("postgres".to_string()),
-        "databricks" => prefixes.push("spark".to_string()),
-        // `AdapterType::LakeCompute` renders as `lakecompute`; lake compute defines no
-        // macros of its own and inherits DuckDB's.
-        "lakecompute" => prefixes.push("duckdb".to_string()),
-        // Add other adapter hierarchies as needed
-        _ => {}
+    if let Some(parent) = get_parent_adapter(dialect) {
+        prefixes.push(parent.to_string());
     }
 
     // Always add default as last fallback
@@ -407,14 +410,8 @@ pub fn get_internal_packages(dialect: &str) -> Vec<String> {
 
     internal_packages.push(format!("dbt_{dialect}"));
 
-    // Add parent packages
-    match dialect {
-        "redshift" => internal_packages.push("dbt_postgres".to_string()),
-        "databricks" => internal_packages.push("dbt_spark".to_string()),
-        // See `get_adapter_prefixes`: lake compute has no macro package of its own.
-        "lakecompute" => internal_packages.push("dbt_duckdb".to_string()),
-        // Add other adapter hierarchies as needed
-        _ => {}
+    if let Some(parent) = get_parent_adapter(dialect) {
+        internal_packages.push(format!("dbt_{parent}"));
     }
     internal_packages.push("dbt".to_string());
 
@@ -523,6 +520,23 @@ fn macro_namespace_template_candidates(
     }
 
     candidates
+}
+
+#[cfg(test)]
+mod adapter_inheritance_tests {
+    use super::*;
+
+    #[test]
+    fn motherduck_searches_duckdb_before_default() {
+        assert_eq!(
+            get_adapter_prefixes("motherduck"),
+            ["motherduck", "duckdb", "default"]
+        );
+        assert_eq!(
+            get_internal_packages("motherduck"),
+            ["dbt_motherduck", "dbt_duckdb", "dbt"]
+        );
+    }
 }
 
 #[cfg(test)]
