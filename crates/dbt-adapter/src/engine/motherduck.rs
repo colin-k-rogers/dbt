@@ -1,7 +1,10 @@
+use std::collections::HashMap;
+
 use dbt_adapter_core::AdapterType;
 use dbt_adbc::Connection;
 use dbt_auth::AdapterConfig;
 use dbt_common::{AdapterError, AdapterErrorKind, AdapterResult};
+use dbt_schemas::schemas::dbt_catalogs::{CatalogType, DbtCatalogsView};
 
 use crate::errors::adbc_error_to_adapter_error;
 
@@ -9,7 +12,7 @@ fn config_error(message: impl Into<String>) -> AdapterError {
     AdapterError::new(AdapterErrorKind::Configuration, message)
 }
 
-fn init_sql(config: &AdapterConfig) -> AdapterResult<Vec<String>> {
+fn settings_sql(config: &AdapterConfig) -> AdapterResult<Vec<String>> {
     let Some(value) = config.get("settings") else {
         return Ok(Vec::new());
     };
@@ -44,6 +47,65 @@ fn init_sql(config: &AdapterConfig) -> AdapterResult<Vec<String>> {
             Ok(format!("SET {name} = '{value}'"))
         })
         .collect()
+}
+
+fn catalog_attach_sql(view: &DbtCatalogsView<'_>) -> AdapterResult<Vec<String>> {
+    let mut seen_aliases = HashMap::new();
+    let mut statements = Vec::new();
+
+    for catalog in view
+        .catalogs
+        .iter()
+        .filter(|catalog| catalog.catalog_type == CatalogType::MotherDuck)
+    {
+        let config = catalog
+            .config_block("motherduck")
+            .expect("validated MotherDuck catalogs have a motherduck config block");
+        let database = config
+            .get("database")
+            .and_then(dbt_yaml::Value::as_str)
+            .unwrap_or(catalog.name);
+        let alias = config
+            .get("catalog_database")
+            .and_then(dbt_yaml::Value::as_str)
+            .unwrap_or(database);
+        let collision_key = alias.to_lowercase();
+        if let Some(prior) = seen_aliases.insert(collision_key, catalog.name) {
+            return Err(config_error(format!(
+                "Catalog '{}' MotherDuck attach alias '{alias}' collides case-insensitively with catalog '{prior}'",
+                catalog.name
+            )));
+        }
+
+        let database =
+            dbt_adapter_sql::ident::escape_string_literal(database, AdapterType::MotherDuck);
+        let alias = dbt_adapter_sql::ident::quote_identifier(alias, AdapterType::MotherDuck);
+        statements.push(format!("ATTACH IF NOT EXISTS 'md:{database}' AS {alias}"));
+    }
+
+    Ok(statements)
+}
+
+fn init_sql_with_catalogs(
+    config: &AdapterConfig,
+    catalogs: Option<&DbtCatalogsView<'_>>,
+) -> AdapterResult<Vec<String>> {
+    let mut statements = catalogs.map_or_else(|| Ok(Vec::new()), catalog_attach_sql)?;
+    statements.extend(settings_sql(config)?);
+    Ok(statements)
+}
+
+fn init_sql(config: &AdapterConfig) -> AdapterResult<Vec<String>> {
+    if !crate::load_catalogs::fetch_use_catalogs_v2() {
+        return init_sql_with_catalogs(config, None);
+    }
+    let Some(catalogs) = crate::load_catalogs::fetch_catalogs() else {
+        return init_sql_with_catalogs(config, None);
+    };
+    let view = catalogs
+        .view()
+        .map_err(|error| config_error(error.to_string()))?;
+    init_sql_with_catalogs(config, Some(&view))
 }
 
 fn init_statement_error(index: usize) -> AdapterError {
@@ -90,7 +152,7 @@ settings:
         );
 
         assert_eq!(
-            init_sql(&config).unwrap(),
+            settings_sql(&config).unwrap(),
             vec![
                 r#"SET "custom""user" = 'dbt''s tests'"#,
                 r#"SET "enable_progress_bar" = 'false'"#,
@@ -101,7 +163,7 @@ settings:
 
     #[test]
     fn init_sql_rejects_non_scalar_values_without_echoing_them() {
-        let err = init_sql(&config(
+        let err = settings_sql(&config(
             r#"
 settings:
   motherduck_token: [super-secret]
@@ -124,5 +186,165 @@ settings:
             "MotherDuck session initialization statement 2 failed"
         );
         assert!(!err.message().contains("token"));
+    }
+
+    fn with_catalogs(yaml: &str, f: impl FnOnce(&DbtCatalogsView<'_>)) {
+        use dbt_schemas::schemas::dbt_catalogs_deprecated::DbtCatalogs;
+
+        let value: dbt_yaml::Value = dbt_yaml::from_str(yaml).unwrap();
+        let dbt_yaml::Value::Mapping(mapping, span) = value else {
+            panic!("expected mapping");
+        };
+        let catalogs = DbtCatalogs::new(mapping, span);
+        let view = catalogs.view().unwrap();
+        f(&view);
+    }
+
+    #[test]
+    fn catalog_attach_sql_applies_defaults_and_aliases() {
+        with_catalogs(
+            r#"
+catalogs:
+  - name: analytics
+    type: motherduck
+    table_format: default
+    config:
+      motherduck: {}
+  - name: reporting
+    type: motherduck
+    table_format: default
+    config:
+      motherduck:
+        database: source_db
+        catalog_database: routed_db
+  - name: source_only
+    type: motherduck
+    table_format: default
+    config:
+      motherduck:
+        database: source_db_only
+  - name: alias_only
+    type: motherduck
+    table_format: default
+    config:
+      motherduck:
+        catalog_database: routed_db_only
+"#,
+            |view| {
+                assert_eq!(
+                    catalog_attach_sql(view).unwrap(),
+                    vec![
+                        r#"ATTACH IF NOT EXISTS 'md:analytics' AS "analytics""#,
+                        r#"ATTACH IF NOT EXISTS 'md:source_db' AS "routed_db""#,
+                        r#"ATTACH IF NOT EXISTS 'md:source_db_only' AS "source_db_only""#,
+                        r#"ATTACH IF NOT EXISTS 'md:alias_only' AS "routed_db_only""#,
+                    ]
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn catalog_attach_sql_escapes_database_and_alias() {
+        with_catalogs(
+            r#"
+catalogs:
+  - name: reporting
+    type: motherduck
+    table_format: default
+    config:
+      motherduck:
+        database: "team's data"
+        catalog_database: 'route"db'
+"#,
+            |view| {
+                assert_eq!(
+                    catalog_attach_sql(view).unwrap(),
+                    vec![r#"ATTACH IF NOT EXISTS 'md:team''s data' AS "route""db""#]
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn catalog_attach_sql_rejects_case_insensitive_alias_collisions() {
+        with_catalogs(
+            r#"
+catalogs:
+  - name: first
+    type: motherduck
+    table_format: default
+    config:
+      motherduck:
+        catalog_database: Reporting
+  - name: second
+    type: motherduck
+    table_format: default
+    config:
+      motherduck:
+        catalog_database: reporting
+"#,
+            |view| {
+                let err = catalog_attach_sql(view).unwrap_err();
+                assert_eq!(err.kind(), AdapterErrorKind::Configuration);
+                assert!(err.message().contains("collides case-insensitively"));
+                assert!(err.message().contains("first"));
+                assert!(err.message().contains("second"));
+            },
+        );
+    }
+
+    #[test]
+    fn catalog_attach_sql_ignores_absent_and_non_motherduck_catalogs() {
+        assert!(
+            init_sql_with_catalogs(&config("{}"), None)
+                .unwrap()
+                .is_empty()
+        );
+        with_catalogs(
+            r#"
+catalogs:
+  - name: local
+    type: local_filesystem
+    table_format: default
+    config:
+      duckdb:
+        root_path: /tmp/data
+"#,
+            |view| assert!(catalog_attach_sql(view).unwrap().is_empty()),
+        );
+    }
+
+    #[test]
+    fn catalog_attachments_precede_session_settings() {
+        with_catalogs(
+            r#"
+catalogs:
+  - name: analytics
+    type: motherduck
+    table_format: default
+    config:
+      motherduck: {}
+"#,
+            |view| {
+                let statements = init_sql_with_catalogs(
+                    &config(
+                        r#"
+settings:
+  enable_progress_bar: false
+"#,
+                    ),
+                    Some(view),
+                )
+                .unwrap();
+                assert_eq!(
+                    statements,
+                    vec![
+                        r#"ATTACH IF NOT EXISTS 'md:analytics' AS "analytics""#,
+                        r#"SET "enable_progress_bar" = 'false'"#,
+                    ]
+                );
+            },
+        );
     }
 }
