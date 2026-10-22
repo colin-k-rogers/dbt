@@ -21,6 +21,7 @@ pub const STATIC_ANALYSIS_SUPPORTED_ADAPTERS: &[AdapterType] = &[
     AdapterType::Databricks,
     AdapterType::Spark,
     AdapterType::DuckDB,
+    AdapterType::MotherDuck,
 ];
 
 /// Adapters that support concurrent execution of microbatch models.
@@ -61,6 +62,8 @@ pub enum AdapterType {
     Spark,
     /// DuckDB
     DuckDB,
+    /// MotherDuck
+    MotherDuck,
     /// Postgres
     #[strum(to_string = "postgres", serialize = "postgresql")]
     Postgres,
@@ -131,7 +134,7 @@ pub fn quote_char(adapter_type: AdapterType) -> char {
         Redshift => '"',
         Postgres | Salesforce => '"',
         Fabric => '"',
-        DuckDB | LakeCompute => '"',
+        DuckDB | MotherDuck | LakeCompute => '"',
         Athena | Trino | Starburst => '"',
         Datafusion => '"',
         // https://clickhouse.com/docs/sql-reference/syntax#identifiers
@@ -186,6 +189,7 @@ mod tests {
             ("sAlesforce", AdapterType::Salesforce),
             ("sPark", AdapterType::Spark),
             ("dUckdb", AdapterType::DuckDB),
+            ("mOtherduck", AdapterType::MotherDuck),
             ("fAbric", AdapterType::Fabric),
             ("cLickhouse", AdapterType::ClickHouse),
             ("aThena", AdapterType::Athena),
@@ -214,6 +218,27 @@ mod tests {
         assert_eq!(pg.as_ref(), "postgres");
         let s: &'static str = pg.into();
         assert_eq!(s, "postgres");
+    }
+
+    #[test]
+    fn test_motherduck_string_and_duckdb_dialect_parity() {
+        let motherduck = AdapterType::MotherDuck;
+        assert_eq!(motherduck.to_string(), "motherduck");
+        assert_eq!(motherduck.as_ref(), "motherduck");
+        assert_eq!(
+            "mOtherduck".parse::<AdapterType>().unwrap(),
+            AdapterType::MotherDuck
+        );
+        assert_eq!(
+            serde_json::to_string(&motherduck).unwrap(),
+            "\"motherduck\""
+        );
+        assert_eq!(
+            quote_char(motherduck),
+            quote_char(AdapterType::DuckDB),
+            "MotherDuck must retain DuckDB quoting parity"
+        );
+        assert!(STATIC_ANALYSIS_SUPPORTED_ADAPTERS.contains(&motherduck));
     }
 
     /// `lakecompute` is the only name that leaves the process.
@@ -274,6 +299,7 @@ mod tests {
                 (AdapterType::Redshift, "redshift"),
                 (AdapterType::Spark, "spark"),
                 (AdapterType::DuckDB, "duckdb"),
+                (AdapterType::MotherDuck, "motherduck"),
                 (AdapterType::Postgres, "postgresql"),
                 (AdapterType::Salesforce, "salesforce"),
                 (AdapterType::Fabric, "fabric"),
@@ -307,6 +333,7 @@ mod tests {
             AdapterType::Salesforce,
             AdapterType::Fabric,
             AdapterType::DuckDB,
+            AdapterType::MotherDuck,
             AdapterType::LakeCompute,
             AdapterType::Athena,
             AdapterType::Trino,
