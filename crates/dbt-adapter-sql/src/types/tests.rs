@@ -1290,7 +1290,7 @@ fn expected_type_rendering_for(backend: AdapterType) -> Vec<(u32, SqlType, &'sta
                 Postgres | Salesforce => pq,
                 Redshift => rs,
                 Databricks => dbx,
-                DuckDB => todo!("DuckDB tests not implemented yet"),
+                DuckDB | MotherDuck => todo!("DuckDB tests not implemented yet"),
                 ClickHouse => ch,
                 Exasol => todo!("Exasol tests not implemented yet"),
                 Spark => todo!("Spark tests not implemented yet"),
@@ -1774,32 +1774,56 @@ fn test_parse_column_description() {
 }
 
 #[test]
-fn duckdb_renders_arrow_timestamp_units_as_its_own_types() {
+fn motherduck_matches_duckdb_timestamp_and_type_semantics() {
     use arrow_schema::{DataType, TimeUnit};
 
-    let render =
-        |data_type: DataType| SqlType::from_arrow_type(DuckDB, &data_type).to_string(DuckDB);
+    let cases = [
+        (DataType::Timestamp(TimeUnit::Second, None), "TIMESTAMP_S"),
+        (
+            DataType::Timestamp(TimeUnit::Millisecond, None),
+            "TIMESTAMP_MS",
+        ),
+        (
+            DataType::Timestamp(TimeUnit::Microsecond, None),
+            "TIMESTAMP",
+        ),
+        (
+            DataType::Timestamp(TimeUnit::Nanosecond, None),
+            "TIMESTAMP_NS",
+        ),
+        (
+            DataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())),
+            "TIMESTAMP WITH TIME ZONE",
+        ),
+    ];
+
+    for (data_type, expected) in cases {
+        for adapter_type in [DuckDB, MotherDuck] {
+            assert_eq!(
+                SqlType::from_arrow_type(adapter_type, &data_type).to_string(adapter_type),
+                expected,
+                "{adapter_type:?}"
+            );
+        }
+    }
+
+    for sql_type in [
+        SqlType::Numeric(None),
+        SqlType::Struct(Some(vec![StructField::new(
+            Ident::new("field", MotherDuck),
+            SqlType::Integer,
+            true,
+        )])),
+    ] {
+        assert_eq!(
+            sql_type.to_string(MotherDuck),
+            sql_type.to_string(DuckDB),
+            "{sql_type:?}"
+        );
+    }
+
     assert_eq!(
-        render(DataType::Timestamp(TimeUnit::Second, None)),
-        "TIMESTAMP_S"
-    );
-    assert_eq!(
-        render(DataType::Timestamp(TimeUnit::Millisecond, None)),
-        "TIMESTAMP_MS"
-    );
-    assert_eq!(
-        render(DataType::Timestamp(TimeUnit::Microsecond, None)),
-        "TIMESTAMP"
-    );
-    assert_eq!(
-        render(DataType::Timestamp(TimeUnit::Nanosecond, None)),
-        "TIMESTAMP_NS"
-    );
-    assert_eq!(
-        render(DataType::Timestamp(
-            TimeUnit::Microsecond,
-            Some("UTC".into())
-        )),
-        "TIMESTAMP WITH TIME ZONE"
+        metadata_type_candidate_keys(MotherDuck),
+        metadata_type_candidate_keys(DuckDB)
     );
 }
