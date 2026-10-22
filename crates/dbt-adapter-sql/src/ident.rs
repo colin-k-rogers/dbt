@@ -112,8 +112,9 @@ pub fn max_identifier_length(adapter_type: AdapterType) -> Option<NonZero<usize>
             // SAFETY: literal 127 is never 0
             Some(unsafe { NonZero::new_unchecked(127) })
         }
-        Snowflake | Bigquery | Databricks | Spark | DuckDB | Salesforce | Fabric | ClickHouse
-        | Exasol | Athena | Starburst | Trino | Datafusion | Dremio | Oracle | LakeCompute => None,
+        Snowflake | Bigquery | Databricks | Spark | DuckDB | MotherDuck | Salesforce | Fabric
+        | ClickHouse | Exasol | Athena | Starburst | Trino | Datafusion | Dremio | Oracle
+        | LakeCompute => None,
     }
 }
 
@@ -132,9 +133,8 @@ pub const fn canonical_quote(backend: AdapterType) -> QuotingStyle {
     use AdapterType::*;
     match backend {
         Bigquery | Databricks | Spark | Athena => QuotingStyle::Backtick,
-        ClickHouse | Exasol | Snowflake | Redshift | Postgres | Salesforce | DuckDB => {
-            QuotingStyle::Double
-        }
+        ClickHouse | Exasol | Snowflake | Redshift | Postgres | Salesforce | DuckDB
+        | MotherDuck => QuotingStyle::Double,
         // https://learn.microsoft.com/en-us/sql/t-sql/statements/set-quoted-identifier-transact-sql?view=sql-server-ver17
         Fabric => QuotingStyle::Double,
         // Fabric => QuotingStyle::Bracketed,
@@ -161,6 +161,7 @@ pub fn is_valid_ident_char(c: char, backend: AdapterType) -> bool {
             | Redshift
             | Salesforce
             | DuckDB
+            | MotherDuck
             | Fabric
             | ClickHouse
             | Starburst
@@ -231,7 +232,7 @@ pub fn must_be_quoted(id: &str, backend: AdapterType) -> bool {
 /// through. Other backends currently pass the name through unchanged.
 pub fn sanitize_identifier(name: &str, backend: AdapterType) -> String {
     match backend {
-        AdapterType::DuckDB => name
+        AdapterType::DuckDB | AdapterType::MotherDuck => name
             .bytes()
             .filter(|&b| b.is_ascii_alphanumeric() || b == b'_')
             .map(char::from)
@@ -449,6 +450,17 @@ mod sanitize_tests {
         assert_eq!(s("a b\tc\n"), "abc");
         assert_eq!(s("under_score123"), "under_score123");
         // Multi-byte Unicode is dropped entirely (no stray continuation bytes).
+        assert_eq!(s("café—x"), "cafx");
+    }
+
+    #[test]
+    fn motherduck_sanitize_strips_sql_metacharacters() {
+        let s = |n: &str| sanitize_identifier(n, AdapterType::MotherDuck);
+        assert_eq!(s("foo\";DROP TABLE bar;--"), "fooDROPTABLEbar");
+        assert_eq!(s("my.catalog.name"), "mycatalogname");
+        assert_eq!(s("'); DROP"), "DROP");
+        assert_eq!(s("a b\tc\n"), "abc");
+        assert_eq!(s("under_score123"), "under_score123");
         assert_eq!(s("café—x"), "cafx");
     }
 }

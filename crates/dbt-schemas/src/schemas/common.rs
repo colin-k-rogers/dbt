@@ -1062,13 +1062,13 @@ pub fn constraint_support(
         (Redshift, Check) => NotSupported,
         (Redshift, Custom) => NotSupported,
 
-        // DuckDB - follows Postgres
-        (DuckDB, NotNull) => Enforced,
-        (DuckDB, ForeignKey) => Enforced,
-        (DuckDB, Unique) => NotEnforced,
-        (DuckDB, PrimaryKey) => NotEnforced,
-        (DuckDB, Check) => NotSupported,
-        (DuckDB, Custom) => NotSupported,
+        // DuckDB and MotherDuck follow Postgres
+        (DuckDB | MotherDuck, NotNull) => Enforced,
+        (DuckDB | MotherDuck, ForeignKey) => Enforced,
+        (DuckDB | MotherDuck, Unique) => NotEnforced,
+        (DuckDB | MotherDuck, PrimaryKey) => NotEnforced,
+        (DuckDB | MotherDuck, Check) => NotSupported,
+        (DuckDB | MotherDuck, Custom) => NotSupported,
 
         // Lake compute - follows DuckDB
         (LakeCompute, NotNull) => Enforced,

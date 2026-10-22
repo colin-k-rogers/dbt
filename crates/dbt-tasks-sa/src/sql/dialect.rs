@@ -26,7 +26,7 @@ pub fn sqlparser_dialect_for(adapter_type: AdapterType) -> &'static dyn Dialect 
         Databricks => &DATABRICKS,
         Redshift => &REDSHIFT,
         Postgres => &POSTGRES,
-        DuckDB => &DUCKDB,
+        DuckDB | MotherDuck => &DUCKDB,
         LakeCompute => &DUCKDB,
         // Spark SQL is closest to Hive / Databricks; HiveDialect is a safe
         // baseline for tokenization (string/comment forms match).
@@ -36,5 +36,18 @@ pub fn sqlparser_dialect_for(adapter_type: AdapterType) -> &'static dyn Dialect 
         // No close sqlparser match — generic SQL tokenizer is permissive enough
         // for statement splitting.
         Trino | Athena | Starburst | Datafusion | Dremio | Oracle | Salesforce | Exasol => &GENERIC,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn motherduck_uses_duckdb_sqlparser_dialect() {
+        assert!(std::ptr::eq(
+            sqlparser_dialect_for(AdapterType::MotherDuck),
+            sqlparser_dialect_for(AdapterType::DuckDB),
+        ));
     }
 }
