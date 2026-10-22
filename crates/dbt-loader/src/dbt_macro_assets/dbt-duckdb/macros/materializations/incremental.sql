@@ -72,6 +72,14 @@
       {% endcall %}
     {% endif %}
 
+    {# Endpoint-backed DuckDB uses a persistent staging relation. Create it in
+       its own request before metadata inspection and dependent DML. #}
+    {% if not temporary and language == 'sql' %}
+      {% call statement("create_temp_relation") %}
+        {{- create_table_as(false, temp_relation, compiled_code) }}
+      {% endcall %}
+    {% endif %}
+
     {% set dest_columns = process_schema_changes(on_schema_change, temp_relation, existing_relation) %}
 
     {% if not dest_columns %}
@@ -86,11 +94,11 @@
     {% set build_sql = strategy_sql_macro_func(strategy_arg_dict) %}
     {% set language = "sql" %}
 
-    {#-- Emit CREATE TEMP TABLE + strategy as ONE multi-statement batch.
-         DuckDB does not split on ';', so the entire batch runs in a single execute() call
-         on one connection, ensuring the temp table is visible to the subsequent DML. --#}
-    {% set create_tmp_sql = create_table_as(temporary, temp_relation, compiled_code) %}
-    {% set build_sql = create_tmp_sql ~ ";\n" ~ build_sql %}
+    {% if temporary %}
+      {# DuckDB temp tables are connection-local, so creation and DML must remain one batch. #}
+      {% set create_tmp_sql = create_table_as(true, temp_relation, compiled_code) %}
+      {% set build_sql = create_tmp_sql ~ ";\n" ~ build_sql %}
+    {% endif %}
 
   {% endif %}
 
