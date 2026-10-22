@@ -978,6 +978,10 @@ pub struct MotherDuckDbConfig {
     pub sslrootcert: Option<String>,
     #[serde(default = "default_motherduck_connect_timeout")]
     pub connect_timeout: Option<StringOrInteger>,
+    /// MotherDuck session settings applied to every endpoint connection.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[merge(strategy = merge_strategies_extend::overwrite_always)]
+    pub settings: Option<HashMap<String, YmlValue>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub threads: Option<StringOrInteger>,
     /// MotherDuck region. The driver connects to `pg.<region>-aws.motherduck.com`.

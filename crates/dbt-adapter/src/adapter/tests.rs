@@ -737,7 +737,7 @@ mod execute_inner_txn {
     use crate::engine::{AdapterEngine, AdbcEngine};
     use crate::sql_types::DefaultTypeOps;
     use crate::stmt_splitter::DefaultStmtSplitter;
-    use dbt_schemas::schemas::relations::SNOWFLAKE_RESOLVED_QUOTING;
+    use dbt_schemas::schemas::relations::{DEFAULT_RESOLVED_QUOTING, SNOWFLAKE_RESOLVED_QUOTING};
 
     /// What the driver reports once the client gives up on a request.
     const TIMEOUT_MESSAGE: &str = "timeout after 10m0s and 8 attempts. HTTP Status: 503";
@@ -748,6 +748,7 @@ mod execute_inner_txn {
     #[derive(Default)]
     struct Session {
         executed: Vec<String>,
+        options: Vec<(String, OptionValue)>,
         discarded: bool,
     }
 
@@ -778,7 +779,10 @@ mod execute_inner_txn {
             Ok(())
         }
 
-        fn set_option(&mut self, _key: OptionStatement, _value: OptionValue) -> Result<()> {
+        fn set_option(&mut self, key: OptionStatement, value: OptionValue) -> Result<()> {
+            if let OptionStatement::Other(key) = key {
+                self.session.lock().unwrap().options.push((key, value));
+            }
             Ok(())
         }
 
@@ -793,7 +797,8 @@ mod execute_inner_txn {
             unimplemented!()
         }
         fn execute_update(&mut self) -> Result<Option<i64>> {
-            unimplemented!()
+            self.session.lock().unwrap().executed.push(self.sql.clone());
+            Ok(Some(2))
         }
         fn execute_schema(&mut self) -> Result<Schema> {
             unimplemented!()
@@ -854,22 +859,28 @@ mod execute_inner_txn {
         }
     }
 
-    fn snowflake_engine() -> Arc<dyn AdapterEngine> {
-        let config = Mapping::from_iter([
-            ("user".into(), "U".into()),
-            ("password".into(), "P".into()),
-            ("account".into(), "A".into()),
-            ("database".into(), "D".into()),
-            ("schema".into(), "S".into()),
-            ("role".into(), "role".into()),
-            ("warehouse".into(), "warehouse".into()),
-        ]);
-        let adapter_type = AdapterType::Snowflake;
+    fn scripted_engine(adapter_type: AdapterType) -> Arc<dyn AdapterEngine> {
+        let (config, quoting) = match adapter_type {
+            AdapterType::Snowflake => (
+                Mapping::from_iter([
+                    ("user".into(), "U".into()),
+                    ("password".into(), "P".into()),
+                    ("account".into(), "A".into()),
+                    ("database".into(), "D".into()),
+                    ("schema".into(), "S".into()),
+                    ("role".into(), "role".into()),
+                    ("warehouse".into(), "warehouse".into()),
+                ]),
+                SNOWFLAKE_RESOLVED_QUOTING,
+            ),
+            AdapterType::MotherDuck => (Mapping::new(), DEFAULT_RESOLVED_QUOTING),
+            _ => panic!("unsupported scripted adapter: {adapter_type}"),
+        };
         Arc::new(AdbcEngine::new(
             adapter_type,
             auth_for_backend(backend_of(adapter_type)).into(),
             AdapterConfig::new(config),
-            SNOWFLAKE_RESOLVED_QUOTING,
+            quoting,
             QueryCommentConfig::from_query_comment(None, adapter_type, false, None),
             Arc::new(DefaultTypeOps::new(adapter_type)),
             Arc::new(DefaultStmtSplitter),
@@ -883,7 +894,11 @@ mod execute_inner_txn {
     /// Runs `sql` through `execute_inner` on a fresh [`ScriptedConnection`] and returns the result
     /// together with the connection's final state.
     fn run(sql: &str) -> (AdapterResult<()>, Session) {
-        let engine = snowflake_engine();
+        run_for(AdapterType::Snowflake, sql, false)
+    }
+
+    fn run_for(adapter_type: AdapterType, sql: &str, fetch: bool) -> (AdapterResult<()>, Session) {
+        let engine = scripted_engine(adapter_type);
         let adapter = AdapterImpl::new(Arc::clone(&engine), None);
         let session = Arc::new(Mutex::new(Session::default()));
         drop_thread_local_connection();
@@ -895,7 +910,7 @@ mod execute_inner_txn {
             &QueryCtx::new("test"),
             sql,
             true,
-            false,
+            fetch,
             None,
             None,
             CancellationToken::never_cancels(),
@@ -904,6 +919,28 @@ mod execute_inner_txn {
         let mut session = std::mem::take(&mut *session.lock().unwrap());
         session.discarded = !tlocal_slot_occupied();
         (result.map(|_| ()), session)
+    }
+
+    #[test]
+    fn motherduck_sequences_statements_and_disables_copy() {
+        let (result, session) = run_for(
+            AdapterType::MotherDuck,
+            "create temp table items(id integer); insert into items values (1), (2);",
+            false,
+        );
+
+        result.unwrap();
+        assert_eq!(
+            session.executed,
+            [
+                "create temp table items(id integer)",
+                "insert into items values (1), (2)"
+            ]
+        );
+        assert!(session.options.iter().any(|(key, value)| {
+            key == dbt_adbc::postgres::USE_COPY
+                && matches!(value, OptionValue::String(value) if value == "false")
+        }));
     }
 
     #[test]
