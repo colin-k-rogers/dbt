@@ -129,6 +129,18 @@ mod quoting_default_tests {
         }
     }
 
+    #[test]
+    fn motherduck_matches_duckdb_quoting_defaults() {
+        assert_eq!(
+            default_dbt_quoting_for(AdapterType::MotherDuck),
+            default_dbt_quoting_for(AdapterType::DuckDB)
+        );
+        assert_eq!(
+            default_resolved_quoting_for(AdapterType::MotherDuck),
+            default_resolved_quoting_for(AdapterType::DuckDB)
+        );
+    }
+
     /// The two accessors must not disagree — one seeds the config hierarchy, the
     /// other builds relations.
     #[test]
