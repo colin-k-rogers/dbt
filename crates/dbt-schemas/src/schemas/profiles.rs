@@ -311,7 +311,8 @@ impl DbConfig {
                 "fivetran_auth_url",
             ],
             // Adapter types with no `DbConfig` variant, so nothing to display.
-            AdapterType::Athena
+            AdapterType::MotherDuck
+            | AdapterType::Athena
             | AdapterType::Starburst
             | AdapterType::Dremio
             | AdapterType::Oracle => &[],
