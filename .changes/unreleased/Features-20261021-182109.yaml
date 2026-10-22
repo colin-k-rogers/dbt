@@ -1,0 +1,7 @@
+kind: Features
+body: Add endpoint-safe MotherDuck seed and incremental macros.
+time: 2026-10-21T18:21:09.177175-07:00
+custom:
+    author: colin-k-rogers
+    issue: "16817"
+    project: dbt-core
