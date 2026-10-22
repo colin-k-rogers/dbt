@@ -216,11 +216,7 @@ impl AdbcEngine {
                 self.configure_cloud_database(backend)
             })
             .map_err(crate::errors::auth_error_to_adapter_error)?;
-        let load_strategy = match (use_cloud_credentials, self.adapter_type) {
-            (true, _) => LoadStrategy::Bridge,
-            (false, AdapterType::DuckDB) => LoadStrategy::SystemThenCdnCache,
-            (false, _) => LoadStrategy::CdnCache,
-        };
+        let load_strategy = load_strategy(use_cloud_credentials, self.adapter_type);
 
         // This will load the "flock" driver if load_strategy is Remote.
         let mut driver = driver::Builder::new(backend, load_strategy)
@@ -622,6 +618,10 @@ impl AdapterEngine for AdbcEngine {
                 );
             }
         }
+        match self.adapter_type {
+            AdapterType::MotherDuck => super::motherduck::apply_init_sql(conn.as_mut(), config)?,
+            _ => {}
+        }
         // Tag the connection with its config fingerprint and cache it on the
         // engine, so the pool reuses a connection only among engines with an
         // identical connection configuration.
@@ -670,6 +670,15 @@ impl AdapterEngine for AdbcEngine {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+fn load_strategy(use_cloud_credentials: bool, adapter_type: AdapterType) -> LoadStrategy {
+    match (use_cloud_credentials, adapter_type) {
+        (true, _) => LoadStrategy::Bridge,
+        (false, AdapterType::DuckDB) => LoadStrategy::SystemThenCdnCache,
+        (false, AdapterType::MotherDuck) => LoadStrategy::System(None),
+        (false, _) => LoadStrategy::CdnCache,
+    }
+}
 
 /// Enrich connection errors with adapter-specific hints where possible.
 fn enrich_connection_error(
@@ -720,6 +729,22 @@ mod tests {
     use minijinja::Environment;
     use minijinja::value::Value;
     use std::collections::BTreeMap;
+
+    #[test]
+    fn motherduck_uses_the_system_driver() {
+        assert!(matches!(
+            load_strategy(false, AdapterType::MotherDuck),
+            LoadStrategy::System(None)
+        ));
+        assert!(matches!(
+            load_strategy(false, AdapterType::DuckDB),
+            LoadStrategy::SystemThenCdnCache
+        ));
+        assert!(matches!(
+            load_strategy(true, AdapterType::MotherDuck),
+            LoadStrategy::Bridge
+        ));
+    }
 
     fn config_with_compute_block() -> AdapterConfig {
         AdapterConfig::new(Mapping::from_iter([("compute".into(), true.into())]))
@@ -975,5 +1000,156 @@ mod cloud_credential_tests {
             opt_string(&opts, "dbt_cloud.project_id"),
             Some("proj-999".to_string())
         );
+    }
+}
+
+#[cfg(test)]
+mod motherduck_live_tests {
+    use std::sync::Arc;
+
+    use adbc_core::options::OptionConnection;
+    use arrow_array::cast::AsArray;
+    use arrow_array::types::Int64Type;
+    use dbt_schemas::schemas::relations::DEFAULT_RESOLVED_QUOTING;
+    use dbt_yaml::{Mapping, Value};
+
+    use super::*;
+    use crate::cache::RelationCache;
+    use crate::engine::AdapterEngine;
+    use crate::engine::query_comment::QueryCommentConfig;
+    use crate::sql_types::DefaultTypeOps;
+    use crate::stmt_splitter::DefaultStmtSplitter;
+
+    fn live_config() -> Option<AdapterConfig> {
+        let required = [
+            ("host", "DBT_MOTHERDUCK_HOST"),
+            ("token", "MOTHERDUCK_TOKEN"),
+            ("database", "DBT_MOTHERDUCK_DATABASE"),
+        ];
+        let mut mapping = Mapping::new();
+        for (field, var) in required {
+            let Ok(value) = std::env::var(var) else {
+                eprintln!("skipping: {var} is not set");
+                return None;
+            };
+            mapping.insert(field.into(), value.into());
+        }
+        mapping.insert("schema".into(), "main".into());
+        mapping.insert(
+            "settings".into(),
+            Value::Mapping(
+                Mapping::from_iter([("enable_progress_bar".into(), false.into())]),
+                Default::default(),
+            ),
+        );
+        Some(AdapterConfig::new(mapping))
+    }
+
+    fn live_engine(config: AdapterConfig) -> AdbcEngine {
+        let adapter_type = AdapterType::MotherDuck;
+        AdbcEngine::new(
+            adapter_type,
+            dbt_auth::auth_for_backend(Backend::MotherDuck).into(),
+            config,
+            DEFAULT_RESOLVED_QUOTING,
+            QueryCommentConfig::from_query_comment(None, adapter_type, false, None),
+            Arc::new(DefaultTypeOps::new(adapter_type)),
+            Arc::new(DefaultStmtSplitter),
+            Arc::new(RelationCache::default()),
+            BTreeMap::new(),
+            None,
+            None,
+        )
+    }
+
+    #[dbt_runtime::worker_test]
+    fn production_auth_and_engine_execute_against_motherduck() -> AdapterResult<()> {
+        let Some(config) = live_config() else {
+            return Ok(());
+        };
+        let engine = live_engine(config);
+        let mut connection =
+            engine.new_connection(None, Some("motherduck-live-test".to_string()))?;
+        let token = CancellationToken::never_cancels();
+        let ctx = QueryCtx::new("motherduck live qualification");
+
+        let setting = engine.execute(
+            None,
+            connection.as_mut(),
+            &ctx,
+            "SELECT current_setting('enable_progress_bar')::VARCHAR",
+            token.clone(),
+        )?;
+        assert_eq!(setting.column(0).as_string::<i32>().value(0), "false");
+
+        let name = format!("__dbt_engine_motherduck_{}", std::process::id());
+        let table = format!("main.{name}");
+        let qualification = (|| -> AdapterResult<()> {
+            engine.execute_with_options(
+                None,
+                &ctx,
+                connection.as_mut(),
+                &format!("CREATE TABLE {table} (id INTEGER)"),
+                Options::new(),
+                false,
+                token.clone(),
+            )?;
+
+            connection
+                .set_option(OptionConnection::AutoCommit, "false".into())
+                .map_err(adbc_error_to_adapter_error)?;
+            let inserted = engine.execute_with_options(
+                None,
+                &ctx,
+                connection.as_mut(),
+                &format!("INSERT INTO {table} VALUES (1), (2)"),
+                Options::new(),
+                false,
+                token.clone(),
+            )?;
+            assert_eq!(
+                inserted
+                    .schema()
+                    .metadata()
+                    .get(crate::record_batch::ROWS_AFFECTED_META)
+                    .map(String::as_str),
+                Some("2")
+            );
+            connection.rollback().map_err(adbc_error_to_adapter_error)?;
+
+            let count = engine.execute(
+                None,
+                connection.as_mut(),
+                &ctx,
+                &format!("SELECT count(*)::BIGINT FROM {table}"),
+                token.clone(),
+            )?;
+            assert_eq!(count.column(0).as_primitive::<Int64Type>().value(0), 0);
+            Ok(())
+        })();
+
+        engine.execute_with_options(
+            None,
+            &ctx,
+            connection.as_mut(),
+            &format!("DROP TABLE IF EXISTS {table}"),
+            Options::new(),
+            false,
+            token.clone(),
+        )?;
+        connection.commit().map_err(adbc_error_to_adapter_error)?;
+        let absent = engine.execute(
+            None,
+            connection.as_mut(),
+            &ctx,
+            &format!(
+                "SELECT count(*)::BIGINT FROM information_schema.tables \
+                 WHERE table_schema = 'main' AND table_name = '{name}'"
+            ),
+            token,
+        )?;
+        assert_eq!(absent.column(0).as_primitive::<Int64Type>().value(0), 0);
+
+        qualification
     }
 }

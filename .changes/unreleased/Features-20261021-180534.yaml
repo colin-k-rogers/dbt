@@ -1,0 +1,7 @@
+kind: Features
+body: Add MotherDuck PostgreSQL endpoint execution with per-connection settings and transaction support.
+time: 2026-10-21T18:05:34.8998-07:00
+custom:
+    author: colin-k-rogers
+    issue: "16817"
+    project: dbt-core
