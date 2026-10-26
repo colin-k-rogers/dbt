@@ -697,18 +697,16 @@ mod per_node_dialect_tests {
     use super::*;
 
     #[test]
-    fn motherduck_inherits_duckdb_materialization() {
+    fn motherduck_does_not_inherit_duckdb_materialization() {
         let resolver = resolver_with(
             vec![build_macro("materialization_table_duckdb", "dbt_duckdb")],
             "my_project",
         );
 
-        assert_eq!(
-            resolver
-                .find_materialization_macro_by_name("table", AdapterType::MotherDuck)
-                .unwrap(),
-            "dbt_duckdb.materialization_table_duckdb"
-        );
+        let err = resolver
+            .find_materialization_macro_by_name("table", AdapterType::MotherDuck)
+            .unwrap_err();
+        assert!(format!("{err}").contains("table"));
     }
 
     #[test]
