@@ -569,10 +569,10 @@ mod internal_package_union_tests {
     use super::*;
 
     #[test]
-    fn motherduck_loads_its_package_then_duckdb() {
+    fn motherduck_loads_only_its_own_package() {
         assert_eq!(
             internal_package_names(AdapterType::MotherDuck),
-            ["dbt-adapters", "dbt-motherduck", "dbt-duckdb"]
+            ["dbt-adapters", "dbt-motherduck"]
         );
     }
 
