@@ -350,7 +350,9 @@ pub fn get_parent_adapter(dialect: &str) -> Option<&'static str> {
     match dialect {
         "redshift" => Some("postgres"),
         "databricks" => Some("spark"),
-        "lakecompute" | "motherduck" => Some("duckdb"),
+        // Lake compute defines no macros of its own. MotherDuck ships the
+        // dbt-motherduck package and must not fall through to dbt-duckdb.
+        "lakecompute" => Some("duckdb"),
         _ => None,
     }
 }
@@ -539,15 +541,9 @@ mod adapter_inheritance_tests {
     use super::*;
 
     #[test]
-    fn motherduck_searches_duckdb_before_default() {
-        assert_eq!(
-            get_adapter_prefixes("motherduck"),
-            ["motherduck", "duckdb", "default"]
-        );
-        assert_eq!(
-            get_internal_packages("motherduck"),
-            ["dbt_motherduck", "dbt_duckdb", "dbt"]
-        );
+    fn motherduck_does_not_search_duckdb() {
+        assert_eq!(get_adapter_prefixes("motherduck"), ["motherduck", "default"]);
+        assert_eq!(get_internal_packages("motherduck"), ["dbt_motherduck", "dbt"]);
     }
 }
 
