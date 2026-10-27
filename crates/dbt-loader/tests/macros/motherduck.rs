@@ -150,6 +150,9 @@ fn incremental_harness(adapter_type: AdapterType, strategy_sql: &'static str) ->
         });
     harness.mock().on("commit", |_| Ok(Value::UNDEFINED));
     harness.mock().on("drop_relation", |_| Ok(Value::UNDEFINED));
+    harness
+        .mock()
+        .on("expand_target_column_types", |_| Ok(Value::UNDEFINED));
 
     harness
 }
@@ -164,8 +167,13 @@ fn render_second_incremental(adapter_type: AdapterType, strategy_sql: &'static s
         .with("dbt_version", Value::from("2.0.0"))
         .build();
 
+    let materialization = if adapter_type == AdapterType::MotherDuck {
+        "materialization_incremental_motherduck"
+    } else {
+        "materialization_incremental_duckdb"
+    };
     harness
-        .render("{{ materialization_incremental_duckdb() }}", ctx)
+        .render(&format!("{{{{ {materialization}() }}}}"), ctx)
         .unwrap_or_else(|error| panic!("incremental materialization should render: {error:?}"));
     executed_sql(harness.mock())
 }
