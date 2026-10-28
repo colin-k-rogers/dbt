@@ -41,16 +41,17 @@ impl MotherDuckAuthIR<'_> {
                 uri.set_port(Some(port))
                     .map_err(|_| AuthError::config("port must be between 1 and 65535"))?;
                 uri.set_path(database);
+                // The driver connects from this URI alone and rejects separate
+                // username and password options.
                 uri.query_pairs_mut()
+                    .append_pair("user", user)
+                    .append_pair("password", token)
                     .append_pair("sslmode", "verify-full")
                     .append_pair("sslrootcert", sslrootcert)
                     .append_pair("connect_timeout", &connect_timeout)
                     .append_pair("options", "--attach_mode=single");
 
-                builder
-                    .with_uri(uri)
-                    .with_username(user)
-                    .with_password(token);
+                builder.with_uri(uri);
             }
         }
 
@@ -190,6 +191,8 @@ mod tests {
         );
         assert_eq!(auth.backend(), Backend::MotherDuck);
         assert_eq!(builder.backend, Backend::MotherDuck);
+        assert!(builder.username.is_none());
+        assert!(builder.password.is_none());
         assert_contains!(
             &uri,
             "postgresql://pg.us-east-1-aws.motherduck.com:5432/analytics?"
