@@ -39,6 +39,7 @@
   {% elif full_refresh_mode %}
     {% set build_sql = create_table_as(false, intermediate_relation, sql, partitioned_by=partitioned_by, sorted_by=sorted_by) %}
   {% else %}
+    {% do run_query(create_schema(temp_relation)) %}
     {% do run_query(get_create_table_as_sql(false, temp_relation, sql)) %}
     {% do to_drop.append(temp_relation) %}
     {% do adapter.expand_target_column_types(from_relation=temp_relation, to_relation=target_relation) %}

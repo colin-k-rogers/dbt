@@ -32,6 +32,7 @@
 
     {% set select = snapshot_staging_table(strategy, sql, target_relation) %}
 
+    {% do run_query(create_schema(temp_relation)) %}
     {% call statement('build_snapshot_staging_relation') %}
         {{ create_table_as(temporary, temp_relation, select) }}
     {% endcall %}
