@@ -41,7 +41,7 @@ use std::sync::Arc;
 
 fn include_policy(adapter_type: AdapterType, path: &RelationPath) -> Policy {
     match adapter_type {
-        AdapterType::DuckDB => Policy::new(
+        AdapterType::DuckDB | AdapterType::MotherDuck => Policy::new(
             path.database.as_ref().is_some_and(|db| {
                 !db.is_empty()
                     && !db.eq_ignore_ascii_case("main")
@@ -2193,18 +2193,20 @@ mod tests {
 
         #[test]
         fn test_include_policy_for_attached_catalog() {
-            assert!(
-                include_policy(AdapterType::DuckDB, &path_from_db(Some("stocks_dev"))).database
-            );
+            for adapter_type in [AdapterType::DuckDB, AdapterType::MotherDuck] {
+                assert!(include_policy(adapter_type, &path_from_db(Some("stocks_dev"))).database);
+            }
         }
 
         #[test]
         fn test_should_not_include_database_for_default_catalog() {
-            assert!(!include_policy(AdapterType::DuckDB, &path_from_db(Some("main"))).database);
-            assert!(!include_policy(AdapterType::DuckDB, &path_from_db(Some("memory"))).database);
-            assert!(!include_policy(AdapterType::DuckDB, &path_from_db(Some("MEMORY"))).database);
-            assert!(!include_policy(AdapterType::DuckDB, &path_from_db(Some(""))).database);
-            assert!(!include_policy(AdapterType::DuckDB, &path_from_db(None)).database);
+            for adapter_type in [AdapterType::DuckDB, AdapterType::MotherDuck] {
+                assert!(!include_policy(adapter_type, &path_from_db(Some("main"))).database);
+                assert!(!include_policy(adapter_type, &path_from_db(Some("memory"))).database);
+                assert!(!include_policy(adapter_type, &path_from_db(Some("MEMORY"))).database);
+                assert!(!include_policy(adapter_type, &path_from_db(Some(""))).database);
+                assert!(!include_policy(adapter_type, &path_from_db(None)).database);
+            }
         }
     }
 

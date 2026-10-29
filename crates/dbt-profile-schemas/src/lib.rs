@@ -79,6 +79,9 @@ impl ProfileSetup {
                 let c1 = duckdb_config::setup_duckdb_profile(c0.map(Box::as_ref))?;
                 Ok(DbConfig::DuckDB(c1))
             }
+            MotherDuck => {
+                todo!("setup_motherduck_profile")
+            }
             Postgres => {
                 let c0 = unwrap_db_config!(Postgres);
                 let c1 = postgres_config::setup_postgres_profile(c0.map(Box::as_ref))?;

@@ -40,6 +40,7 @@ pub fn backend_of(adapter_type: AdapterType) -> Backend {
         AdapterType::Salesforce => Backend::Salesforce,
         AdapterType::Spark => Backend::Spark,
         AdapterType::DuckDB => Backend::DuckDB,
+        AdapterType::MotherDuck => Backend::MotherDuck,
         AdapterType::LakeCompute => Backend::LakeCompute,
         AdapterType::Fabric => Backend::SQLServer,
         AdapterType::ClickHouse => Backend::ClickHouse,
@@ -50,6 +51,16 @@ pub fn backend_of(adapter_type: AdapterType) -> Backend {
         AdapterType::Dremio => todo!("Dremio"),
         AdapterType::Oracle => todo!("Oracle"),
         AdapterType::Datafusion => todo!("Datafusion"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn motherduck_maps_to_motherduck_backend() {
+        assert_eq!(backend_of(AdapterType::MotherDuck), Backend::MotherDuck);
     }
 }
 

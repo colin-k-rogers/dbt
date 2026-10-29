@@ -1945,7 +1945,7 @@ fn is_supported_type(adapter_type: AdapterType, ref_type: &DataType) -> bool {
                     || BigqueryTyping::is_geography(ref_type)
             }
             AdapterType::Databricks => DatabricksTyping::is_timestamp_ntz(ref_type),
-            AdapterType::DuckDB => {
+            AdapterType::DuckDB | AdapterType::MotherDuck => {
                 // DuckDB distinct types are wrapped as FixedSizeList(Field(name, ..), 1)
                 matches!(ref_type, DataType::FixedSizeList(_, 1))
             }
