@@ -157,6 +157,17 @@ fn incremental_harness(adapter_type: AdapterType, strategy_sql: &'static str) ->
     harness
 }
 
+fn assert_temp_schema_before(sqls: &[String], staging_at: usize) {
+    let schema = sqls
+        .iter()
+        .position(|sql| sql.to_lowercase().contains("create schema"))
+        .unwrap_or_else(|| panic!("dbt_temp schema must be created: {sqls:?}"));
+    assert!(
+        schema < staging_at,
+        "schema must exist before the staging table: {sqls:?}"
+    );
+}
+
 fn render_second_incremental(adapter_type: AdapterType, strategy_sql: &'static str) -> Vec<String> {
     let harness = incremental_harness(adapter_type, strategy_sql);
     let ctx = harness
@@ -243,6 +254,7 @@ fn endpoint_incremental_insert_creates_staging_relation_first() {
                 .contains("create table")
         })
         .unwrap_or_else(|| panic!("persistent staging CREATE: {sqls:?}"));
+    assert_temp_schema_before(&sqls, create);
     let insert = sqls
         .iter()
         .position(|sql| sql.to_lowercase().contains("insert into test_db"))
@@ -273,6 +285,7 @@ fn endpoint_incremental_merge_creates_staging_relation_first() {
                 .contains("create table")
         })
         .unwrap_or_else(|| panic!("persistent staging CREATE: {sqls:?}"));
+    assert_temp_schema_before(&sqls, create);
     let merge = sqls
         .iter()
         .position(|sql| sql.to_lowercase().contains("merge into"))
