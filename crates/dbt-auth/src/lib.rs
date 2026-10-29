@@ -10,12 +10,12 @@ mod config;
 // Database-specific auth implementations
 mod athena;
 mod bigquery;
+#[cfg(test)]
+mod bridge;
 mod clickhouse;
 mod databricks;
 mod duckdb;
 mod exasol;
-#[cfg(test)]
-mod flock;
 mod lake_compute;
 mod postgres;
 mod redshift;
@@ -27,7 +27,7 @@ mod sqlserver;
 mod test_options;
 
 pub use config::AdapterConfig;
-pub use duckdb::init::{DuckDbTarget, generate_duckdb_init_sql};
+pub use duckdb::init::{DuckDbTarget, generate_duckdb_init_sql, motherduck_saas_mode_query};
 
 pub trait AuthWarningPrinter: Send + Sync {
     fn warn(&self, message: &str);
@@ -74,6 +74,7 @@ pub fn auth_for_backend_with_warnings(
     match backend {
         Backend::Snowflake => Box::new(snowflake::SnowflakeAuth::new(warning_printer)),
         Backend::Postgres => Box::new(postgres::PostgresAuth::new(warning_printer)),
+        Backend::MotherDuck => unimplemented!("MotherDuck backend authentication"),
         Backend::BigQuery => Box::new(bigquery::BigqueryAuth::new(warning_printer)),
         Backend::Databricks => Box::new(databricks::DatabricksAuth::new(warning_printer)),
         Backend::Redshift => Box::new(redshift::RedshiftAuth::new(warning_printer)),

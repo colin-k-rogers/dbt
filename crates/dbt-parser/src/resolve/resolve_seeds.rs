@@ -2,15 +2,17 @@ use crate::args::ResolveArgs;
 use crate::dbt_project_config::{
     ProjectConfigResolver, RootProjectConfigs, disallow_plus_prefix_from_flags, init_project_config,
 };
+use crate::renderer::strip_warehouse_keys_in_config_block;
 use crate::resolve::resolve_utils::{
     build_unrendered_config, err_resource_name_has_spaces, extract_config_map,
-    validate_node_adapter,
+    resolve_node_quoting, select_node_adapter,
 };
 use crate::utils::{
     RelationComponents, extract_resource_config_from_raw_project, get_node_fqn,
     register_duplicate_resource, trigger_duplicate_errors, update_node_relation_components,
 };
 use crate::validation::check_node_static_analysis;
+use dbt_adapter::load_catalogs;
 use dbt_adapter_core::AdapterType;
 use dbt_common::io_args::{StaticAnalysisKind, StaticAnalysisOffReason};
 use dbt_common::path::DbtPath;
@@ -21,12 +23,15 @@ use dbt_jinja_utils::jinja_environment::JinjaEnv;
 use dbt_jinja_utils::node_resolver::NodeResolver;
 use dbt_jinja_utils::serde::into_typed_with_jinja;
 use dbt_jinja_utils::utils::dependency_package_name_from_ctx;
-use dbt_schemas::dbt_utils::resolve_package_quoting;
 use dbt_schemas::dbt_utils::validate_delimiter;
 use dbt_schemas::schemas::common::{DbtChecksum, DbtMaterialization, DbtQuoting, NodeDependsOn};
+use dbt_schemas::schemas::dbt_catalogs_deprecated::LoadedCatalogs;
 use dbt_schemas::schemas::dbt_column::process_columns;
+use dbt_schemas::schemas::project::WarningEmission;
 use dbt_schemas::schemas::properties::SeedProperties;
+use dbt_schemas::schemas::telemetry::NodeType;
 use dbt_schemas::schemas::{CommonAttributes, DbtSeed, DbtSeedAttr, NodeBaseAttributes};
+use dbt_schemas::state::resolve_effective_propagation_target;
 use dbt_schemas::state::{DbtPackage, GenericTestAsset};
 use dbt_schemas::state::{ModelStatus, NodeResolverTracker};
 use indexmap::IndexMap;
@@ -66,6 +71,13 @@ pub async fn resolve_seeds(
     let mut seeds: HashMap<String, Arc<DbtSeed>> = HashMap::new();
     let mut disabled_seeds: HashMap<String, Arc<DbtSeed>> = HashMap::new();
     let io_args = &arg.io;
+    let catalogs = load_catalogs::fetch_catalogs();
+    let use_catalogs_v2 = load_catalogs::fetch_use_catalogs_v2();
+    let catalogs_state = match catalogs.as_deref() {
+        Some(c) if use_catalogs_v2 => LoadedCatalogs::Active(c),
+        Some(c) => LoadedCatalogs::Deprecated(c),
+        None => LoadedCatalogs::None,
+    };
     let dependency_package_name = dependency_package_name_from_ctx(jinja_env, base_ctx);
 
     let is_dependency = dependency_package_name.is_some();
@@ -136,7 +148,7 @@ pub async fn resolve_seeds(
         },
         default_adapter,
     )?
-    .with_resolve_defaults(arg.static_analysis.unwrap_or_default());
+    .with_resolve_defaults(arg.unconfigured_static_analysis());
 
     // TODO: update this to be relative of the root project
     let mut duplicate_errors = Vec::new();
@@ -233,10 +245,17 @@ pub async fn resolve_seeds(
         )?;
 
         // Merge schema_file_info
-        let (seed, patch_path) = if let Some(mpe) = seed_properties.remove(seed_name) {
+        let (seed, patch_path) = if let Some(mut mpe) = seed_properties.remove(seed_name) {
             if !mpe.duplicate_paths.is_empty() {
                 register_duplicate_resource(&mpe, seed_name, "seed", &mut duplicate_errors);
             }
+            strip_warehouse_keys_in_config_block(
+                &mut mpe.schema_value,
+                seed_name,
+                NodeType::Seed,
+                dependency_package_name,
+                WarningEmission::Emit,
+            );
             (
                 into_typed_with_jinja::<SeedProperties, _>(
                     mpe.schema_value,
@@ -321,8 +340,8 @@ pub async fn resolve_seeds(
         validate_delimiter(&properties_config.delimiter)?;
 
         // See `resolve_models`: the flag overrides the config.
-        validate_node_adapter(properties_config.adapter, &path)?;
-        let resolved_node_adapter = arg.adapter_override.or(properties_config.adapter);
+        let selected_adapter =
+            select_node_adapter(arg, properties_config.adapter, None, default_adapter, &path)?;
 
         // Calculate original file path first so we can use it for the checksum
         // if necessary for large seeds
@@ -340,14 +359,21 @@ pub async fn resolve_seeds(
             .clone()
             .map(Into::into)
             .unwrap_or_default();
-        let selected_adapter = resolved_node_adapter.unwrap_or(default_adapter);
-        properties_config.quoting = resolve_package_quoting(
-            Some(match adapter_quoting.get(&selected_adapter) {
-                Some(authored) => properties_config.quoting.filled_from(authored),
-                None => properties_config.quoting,
-            }),
-            resolved_node_adapter.unwrap_or(default_adapter),
-        );
+        let catalog_requires_snowflake = catalogs_state
+            .catalog_requires_snowflake_propagation(properties_config.catalog_name.as_deref())?;
+        let effective_propagation_target = (selected_adapter == AdapterType::LakeCompute)
+            .then(|| {
+                arg.profile_adapter_types.as_deref().and_then(|adapters| {
+                    resolve_effective_propagation_target(
+                        &selected_propagate,
+                        adapters,
+                        catalog_requires_snowflake,
+                    )
+                })
+            })
+            .flatten();
+        properties_config.quoting =
+            resolve_node_quoting(properties_config.quoting, adapter_quoting, selected_adapter);
 
         // Create initial seed with default values
         let mut dbt_seed = DbtSeed {
@@ -383,6 +409,7 @@ pub async fn resolve_seeds(
             __base_attr__: NodeBaseAttributes {
                 adapter: selected_adapter,
                 propagate: selected_propagate,
+                effective_propagation_target,
                 database: database.to_string(), // will be updated below
                 schema: schema.to_string(),     // will be updated below
                 alias: "".to_owned(),           // will be updated below
@@ -419,8 +446,8 @@ pub async fn resolve_seeds(
             store_failures: None,
         };
 
-        update_node_relation_components(
-            &mut dbt_seed,
+        dbt_seed = update_node_relation_components(
+            dbt_seed,
             jinja_env,
             &root_package.dbt_project.name,
             package_name,
@@ -435,7 +462,7 @@ pub async fn resolve_seeds(
             ModelStatus::Disabled
         };
 
-        match node_resolver.insert_ref(&dbt_seed, default_adapter, status, false) {
+        match node_resolver.insert_ref(&dbt_seed, status, false) {
             Ok(_) => (),
             Err(e) => {
                 let err_with_loc = e.with_location(path.clone());
