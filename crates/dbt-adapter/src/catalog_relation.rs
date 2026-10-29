@@ -321,6 +321,7 @@ impl CatalogRelation {
     fn default_catalog_relation_motherduck() -> CatalogRelation {
         CatalogRelation {
             adapter_type: AdapterType::MotherDuck,
+            catalog_type: CatalogType::MotherDuck,
             ..Self::default_catalog_relation_duckdb()
         }
     }
@@ -3393,6 +3394,30 @@ catalogs:
                 .contains("MotherDuck v2 mapping supports only 'motherduck'"),
             "unexpected error: {error}"
         );
+    }
+
+    #[test]
+    fn motherduck_without_catalog_name_is_not_duckdb_native() {
+        let catalogs = load_catalogs_yaml(
+            r#"
+catalogs:
+  - name: reporting
+    type: motherduck
+    table_format: default
+    config:
+      motherduck: {}
+"#,
+        );
+        let relation = from_model_config_and_catalogs_default(
+            AdapterType::MotherDuck,
+            &model(AdapterType::MotherDuck, json!({})),
+            Arc::new(catalogs),
+        )
+        .unwrap();
+
+        assert_eq!(relation.adapter_type, AdapterType::MotherDuck);
+        assert_eq!(relation.catalog_type, CatalogType::MotherDuck);
+        assert!(relation.catalog_name.is_none());
     }
 
     // ===== DuckDB v2 tests =====
