@@ -135,6 +135,7 @@ pub(crate) mod exasol;
 pub(crate) mod fabric;
 pub(crate) mod freshness_overrides;
 pub(crate) mod metadata_adapter;
+pub(crate) mod motherduck;
 pub(crate) mod postgres;
 pub(crate) mod redshift;
 pub(crate) mod salesforce;
