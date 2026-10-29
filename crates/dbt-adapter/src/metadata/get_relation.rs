@@ -1007,11 +1007,11 @@ fn duckdb_get_relation(
     // MotherDuck's PostgreSQL endpoint executes DuckDB SQL but exposes a
     // PostgreSQL-shaped information_schema, so use DuckDB metadata functions.
     let sql = match adapter.adapter_type() {
-        AdapterType::MotherDuck => crate::metadata::duckdb::motherduck_get_relation_sql(
+        AdapterType::MotherDuck => crate::metadata::motherduck::get_relation_sql(
             adapter.quoting(),
             database,
-            schema,
-            identifier,
+            &query_schema,
+            &query_identifier,
         ),
         _ => {
             // DuckDB's table_type values: BASE TABLE, VIEW, LOCAL TEMPORARY

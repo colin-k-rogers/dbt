@@ -3,7 +3,6 @@ use crate::adapter::adapter_impl::AdapterImpl;
 use crate::column::Column;
 use crate::connection::{AdapterConnectionFactory, ConnectionGuard};
 use crate::load_catalogs;
-use crate::query_ctx::{node_id_from_state, query_ctx_from_state};
 use crate::relation::do_create_relation;
 use crate::sql_types::{TypeOps, make_arrow_field_v2};
 use crate::{AdapterResult, errors::AsyncAdapterResult, metadata::*, record_batch::RecordBatchExt};
@@ -468,106 +467,6 @@ pub fn list_relations(
     }
 
     Ok(relations)
-}
-
-pub(crate) fn motherduck_list_schemas_sql(database: &str) -> String {
-    let database = dbt_adapter_sql::ident::escape_string_literal(database, AdapterType::MotherDuck);
-    let filter = if database.is_empty() {
-        String::new()
-    } else {
-        format!(" WHERE lower(database_name) = lower('{database}')")
-    };
-    format!("SELECT schema_name FROM duckdb_schemas(){filter}")
-}
-
-pub(crate) fn motherduck_list_schemas(
-    adapter: &AdapterImpl,
-    state: &State,
-    database: &str,
-) -> AdapterResult<Vec<String>> {
-    let mut conn = adapter.borrow_tlocal_connection(Some(state), node_id_from_state(state))?;
-    let ctx = query_ctx_from_state(state)?.with_desc("list_schemas");
-    let sql = motherduck_list_schemas_sql(database);
-    let batch = adapter.engine().execute(
-        Some(state),
-        conn.as_mut(),
-        &ctx,
-        &sql,
-        CancellationToken::never_cancels(),
-    )?;
-    adapter.list_schemas_inner(Arc::new(batch))
-}
-
-pub(crate) fn motherduck_relation_columns(
-    adapter: &AdapterImpl,
-    state: &State,
-    relation: &dyn BaseRelation,
-) -> AdapterResult<Vec<Column>> {
-    let mut conn = adapter.borrow_tlocal_connection(Some(state), node_id_from_state(state))?;
-    let ctx = query_ctx_from_state(state)?.with_desc("get_columns_in_relation");
-    let sql = format!("DESCRIBE {}", relation.render_self_as_str());
-    let batch = adapter.engine().execute(
-        Some(state),
-        conn.as_mut(),
-        &ctx,
-        &sql,
-        CancellationToken::never_cancels(),
-    )?;
-    columns_from_duckdb_describe(AdapterType::MotherDuck, &batch)
-}
-
-pub(crate) fn motherduck_get_relation_sql(
-    quoting: ResolvedQuoting,
-    database: &str,
-    schema: &str,
-    identifier: &str,
-) -> String {
-    let literal =
-        |value: &str| dbt_adapter_sql::ident::escape_string_literal(value, AdapterType::MotherDuck);
-    let database = literal(database);
-    let schema = if quoting.schema {
-        schema.to_string()
-    } else {
-        schema.to_lowercase()
-    };
-    let schema = literal(&schema);
-    let identifier = if quoting.identifier {
-        identifier.to_string()
-    } else {
-        identifier.to_lowercase()
-    };
-    let identifier = literal(&identifier);
-    let schema_filter = if quoting.schema {
-        format!("schema_name = '{schema}'")
-    } else {
-        format!("lower(schema_name) = lower('{schema}')")
-    };
-    let identifier_filter = if quoting.identifier {
-        format!("table_name = '{identifier}'")
-    } else {
-        format!("lower(table_name) = lower('{identifier}')")
-    };
-    let view_identifier_filter = if quoting.identifier {
-        format!("view_name = '{identifier}'")
-    } else {
-        format!("lower(view_name) = lower('{identifier}')")
-    };
-    let database_filter = if database.is_empty() {
-        String::new()
-    } else {
-        format!(" AND lower(database_name) = lower('{database}')")
-    };
-
-    format!(
-        "SELECT 'BASE TABLE' AS type FROM duckdb_tables() \
-         WHERE {schema_filter} AND {identifier_filter}{database_filter} UNION ALL \
-         SELECT 'VIEW' AS type FROM duckdb_views() \
-         WHERE {schema_filter} AND {view_identifier_filter}{database_filter}",
-    )
-}
-
-pub(crate) fn motherduck_describe_query_sql(sql: &str) -> String {
-    format!("DESCRIBE {}", sql.trim().trim_end_matches(';'))
 }
 
 pub(crate) fn columns_from_duckdb_describe(
@@ -1107,18 +1006,18 @@ mod tests {
         assert!(sql.contains("lower(schema_name) = lower('sales''ops')"));
         assert!(sql.contains("lower(database_name) = lower('team''s data')"));
 
-        let sql = motherduck_list_schemas_sql("team's data");
+        let sql = motherduck::list_schemas_sql("team's data");
         assert_eq!(
             sql,
             "SELECT schema_name FROM duckdb_schemas() \
              WHERE lower(database_name) = lower('team''s data')"
         );
 
-        let sql = motherduck_get_relation_sql(
+        let sql = motherduck::get_relation_sql(
             ResolvedQuoting::falses(),
             "team's data",
-            "Sales'Ops",
-            "Order's",
+            "sales'ops",
+            "order's",
         );
         assert!(sql.contains("FROM duckdb_tables()"));
         assert!(sql.contains("FROM duckdb_views()"));
@@ -1130,7 +1029,7 @@ mod tests {
     #[test]
     fn motherduck_describe_query_and_result_preserve_duckdb_types() {
         assert_eq!(
-            motherduck_describe_query_sql(" select 1 as id; "),
+            motherduck::describe_query_sql(" select 1 as id; "),
             "DESCRIBE select 1 as id"
         );
 
