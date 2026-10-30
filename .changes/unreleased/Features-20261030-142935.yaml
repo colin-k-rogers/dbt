@@ -1,0 +1,7 @@
+kind: Features
+body: Send MotherDuck username, token, region, and session name as driver connection options.
+time: 2026-10-30T14:29:35.110261-07:00
+custom:
+    author: colin-k-rogers
+    issue: "16817"
+    project: dbt-core

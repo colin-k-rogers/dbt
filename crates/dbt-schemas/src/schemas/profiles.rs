@@ -154,7 +154,7 @@ impl DbConfig {
         match self {
             DbConfig::Snowflake(config) => config.account.as_deref(),
             DbConfig::Postgres(config) => config.host.as_deref(),
-            DbConfig::MotherDuck(config) => config.host.as_deref(),
+            DbConfig::MotherDuck(config) => config.host.as_deref().or(config.region.as_deref()),
             DbConfig::Bigquery(config) => config.database.as_deref(),
             DbConfig::Trino(config) => config.host.as_deref(),
             DbConfig::Datafusion(config) => config.database.as_deref(),
@@ -246,6 +246,8 @@ impl DbConfig {
                 "schema",
                 "sslrootcert",
                 "connect_timeout",
+                "region",
+                "session_name",
             ],
             AdapterType::Bigquery => &[
                 "method",
@@ -978,6 +980,13 @@ pub struct MotherDuckDbConfig {
     pub connect_timeout: Option<StringOrInteger>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub threads: Option<StringOrInteger>,
+    /// MotherDuck region. The driver connects to `pg.<region>-aws.motherduck.com`.
+    /// Mutually exclusive with `host`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub region: Option<String>,
+    /// Passed to the driver as `adbc.motherduck.session_name`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_name: Option<String>,
 }
 
 fn default_motherduck_port() -> Option<StringOrInteger> {
@@ -2197,6 +2206,19 @@ fn missing(field: &str) -> String {
     format!("In file `profiles.yml`, field `{field}` is required.")
 }
 
+/// Host shown as `target.host`. A region leaves the connection URI without a
+/// host and lets the driver resolve `pg.<region>-aws.motherduck.com`.
+fn motherduck_target_host(host: Option<&str>, region: Option<&str>) -> Result<String, String> {
+    match (host, region) {
+        (Some(host), None) => Ok(host.to_string()),
+        (None, Some(region)) => Ok(format!("pg.{region}-aws.motherduck.com")),
+        (Some(_), Some(_)) => {
+            Err("In file `profiles.yml`, set `host` or `region`, not both.".to_string())
+        }
+        (None, None) => Err(missing("host or region")),
+    }
+}
+
 // This target context is only to be used in rendering yml's
 // See: https://docs.getdbt.com/reference/dbt-jinja-functions/target
 impl TryFrom<DbConfig> for TargetContext {
@@ -2306,9 +2328,11 @@ impl TryFrom<DbConfig> for TargetContext {
 
             DbConfig::MotherDuck(config) => {
                 let database = config.database.ok_or_else(|| missing("database"))?;
+                let host =
+                    motherduck_target_host(config.host.as_deref(), config.region.as_deref())?;
                 Ok(TargetContext::Postgres(PostgresTargetEnv {
                     dbname: database.clone(),
-                    host: config.host.ok_or_else(|| missing("host"))?,
+                    host,
                     user: config.user.ok_or_else(|| missing("user"))?,
                     port: config.port.ok_or_else(|| missing("port"))?,
                     __common__: CommonTargetContext {
@@ -3095,6 +3119,43 @@ schema: main
         assert_eq!(target.__common__.schema, "main");
         assert_eq!(target.dbname, "analytics");
         assert_eq!(target.port, StringOrInteger::Integer(5432));
+    }
+
+    #[test]
+    fn motherduck_region_fills_target_host_and_rejects_a_host() {
+        let config: DbConfig = dbt_yaml::from_str(
+            r#"
+type: motherduck
+region: us-east-1
+token: super-secret
+database: analytics
+schema: main
+"#,
+        )
+        .unwrap();
+        let target = TargetContext::try_from(config).expect("region target context");
+        let TargetContext::Postgres(target) = target else {
+            panic!("expected PostgreSQL-shaped target context");
+        };
+        assert_eq!(target.host, "pg.us-east-1-aws.motherduck.com");
+
+        let both: DbConfig = dbt_yaml::from_str(
+            r#"
+type: motherduck
+host: pg.us-east-1-aws.motherduck.com
+region: us-east-1
+database: analytics
+schema: main
+"#,
+        )
+        .unwrap();
+        let Err(err) = TargetContext::try_from(both) else {
+            panic!("host and region must be rejected");
+        };
+        assert_eq!(
+            err,
+            "In file `profiles.yml`, set `host` or `region`, not both."
+        );
     }
 
     #[test]
