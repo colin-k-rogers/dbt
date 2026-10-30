@@ -1,5 +1,6 @@
 use crate::AdapterEngine;
 use crate::adapter::adapter_impl::AdapterImpl;
+use crate::column::Column;
 use crate::connection::{AdapterConnectionFactory, ConnectionGuard};
 use crate::load_catalogs;
 use crate::relation::do_create_relation;
@@ -7,7 +8,7 @@ use crate::sql_types::{TypeOps, make_arrow_field_v2};
 use crate::{AdapterResult, errors::AsyncAdapterResult, metadata::*, record_batch::RecordBatchExt};
 use arrow_schema::Schema;
 
-use arrow_array::{Array, Int32Array, RecordBatch, StringArray};
+use arrow_array::{Array, Int32Array, Int64Array, RecordBatch, StringArray};
 
 use dbt_adapter_core::{AdapterType, ExecutionPhase};
 use dbt_adapter_engine::MapReduce;
@@ -125,7 +126,7 @@ impl MetadataAdapter for DuckDBMetadataAdapter {
         let table_names = stats_sql_result.column_values::<StringArray>("table_name")?;
 
         let column_names = stats_sql_result.column_values::<StringArray>("column_name")?;
-        let column_indices = stats_sql_result.column_values::<Int32Array>("column_index")?;
+        let column_indices = catalog_column_indices(self.adapter_type(), &stats_sql_result)?;
         let column_types = stats_sql_result.column_values::<StringArray>("column_type")?;
         let column_comments = stats_sql_result.column_values::<StringArray>("column_comment")?;
 
@@ -139,13 +140,13 @@ impl MetadataAdapter for DuckDBMetadataAdapter {
             let fully_qualified_name = format!("{catalog}.{schema}.{table}").to_lowercase();
 
             let column_name = column_names.value(i);
-            let column_index = column_indices.value(i);
+            let column_index = column_indices[i];
             let column_type = column_types.value(i);
             let column_comment = column_comments.value(i);
 
             let column = ColumnMetadata {
                 name: column_name.to_string(),
-                index: column_index as i128,
+                index: column_index,
                 data_type: column_type.to_string(),
                 comment: match column_comment {
                     "" => None,
@@ -305,6 +306,26 @@ impl MetadataAdapter for DuckDBMetadataAdapter {
     }
 }
 
+fn catalog_column_indices(
+    adapter_type: AdapterType,
+    batch: &RecordBatch,
+) -> AdapterResult<Vec<i128>> {
+    match adapter_type {
+        AdapterType::MotherDuck => Ok(batch
+            .column_values::<Int64Array>("column_index")?
+            .values()
+            .iter()
+            .map(|value| i128::from(*value))
+            .collect()),
+        _ => Ok(batch
+            .column_values::<Int32Array>("column_index")?
+            .values()
+            .iter()
+            .map(|value| i128::from(*value))
+            .collect()),
+    }
+}
+
 /// Build the `information_schema.tables` query used to list relations in a
 /// schema.
 ///
@@ -313,7 +334,11 @@ impl MetadataAdapter for DuckDBMetadataAdapter {
 /// leak in from other attached catalogs, including misreported Iceberg REST
 /// ones) and matches the per-catalog scope dbt expects when warming the relation
 /// cache. When the catalog is unknown (empty), the catalog predicate is omitted.
-fn list_relations_sql(quoting: ResolvedQuoting, db_schema: &CatalogAndSchema) -> String {
+fn list_relations_sql(
+    adapter_type: AdapterType,
+    quoting: ResolvedQuoting,
+    db_schema: &CatalogAndSchema,
+) -> String {
     let query_schema = if quoting.schema {
         db_schema.resolved_schema.clone()
     } else {
@@ -334,6 +359,38 @@ fn list_relations_sql(quoting: ResolvedQuoting, db_schema: &CatalogAndSchema) ->
             ),
         )
     };
+
+    match adapter_type {
+        AdapterType::MotherDuck => {
+            let schema = dbt_adapter_sql::ident::escape_string_literal(
+                &query_schema,
+                AdapterType::MotherDuck,
+            );
+            let catalog = dbt_adapter_sql::ident::escape_string_literal(
+                &db_schema.resolved_catalog,
+                AdapterType::MotherDuck,
+            );
+            let schema_filter = if quoting.schema {
+                format!("schema_name = '{schema}'")
+            } else {
+                format!("lower(schema_name) = lower('{schema}')")
+            };
+            let catalog_filter = if catalog.is_empty() {
+                String::new()
+            } else {
+                format!(" AND lower(database_name) = lower('{catalog}')")
+            };
+            return format!(
+                "SELECT database_name AS table_catalog, schema_name AS table_schema, \
+                 table_name, 'BASE TABLE' AS table_type FROM duckdb_tables() \
+                 WHERE {schema_filter}{catalog_filter} UNION ALL \
+                 SELECT database_name AS table_catalog, schema_name AS table_schema, \
+                 view_name AS table_name, 'VIEW' AS table_type FROM duckdb_views() \
+                 WHERE {schema_filter}{catalog_filter}",
+            );
+        }
+        _ => {}
+    }
 
     format!(
         "SELECT table_catalog, table_schema, table_name, table_type \
@@ -370,7 +427,7 @@ pub fn list_relations(
         ));
     }
 
-    let sql = list_relations_sql(engine.quoting(), db_schema);
+    let sql = list_relations_sql(engine.adapter_type(), engine.quoting(), db_schema);
 
     let batch = engine.execute(None, conn.as_mut(), ctx, &sql, token)?;
 
@@ -410,6 +467,27 @@ pub fn list_relations(
     }
 
     Ok(relations)
+}
+
+pub(crate) fn columns_from_duckdb_describe(
+    adapter_type: AdapterType,
+    describe_result: &RecordBatch,
+) -> AdapterResult<Vec<Column>> {
+    let column_names = describe_result.column_values::<StringArray>("column_name")?;
+    let data_types = describe_result.column_values::<StringArray>("column_type")?;
+
+    Ok((0..describe_result.num_rows())
+        .map(|i| {
+            Column::new(
+                adapter_type,
+                column_names.value(i).to_string(),
+                data_types.value(i).to_string(),
+                None,
+                None,
+                None,
+            )
+        })
+        .collect())
 }
 
 /// An external Iceberg REST catalog that DuckDB reaches through an Iceberg REST
@@ -730,6 +808,7 @@ fn build_schema_from_duckdb_describe(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use arrow_schema::{DataType, Field};
     use dbt_schemas::schemas::dbt_catalogs_deprecated::DbtCatalogs;
 
     fn catalog_and_schema(catalog: &str, schema: &str) -> CatalogAndSchema {
@@ -873,6 +952,7 @@ mod tests {
         // from other attached databases (e.g. remote Iceberg REST catalogs that
         // `information_schema.tables` would otherwise union in) cannot leak.
         let sql = list_relations_sql(
+            AdapterType::DuckDB,
             ResolvedQuoting::trues(),
             &catalog_and_schema("aws_cloud_cost_demo", "aws_cloud_cost"),
         );
@@ -891,6 +971,7 @@ mod tests {
         // predicate must be lowercased to match; the catalog predicate is
         // case-insensitive on both sides via lower() and needs no folding.
         let sql = list_relations_sql(
+            AdapterType::DuckDB,
             ResolvedQuoting::falses(),
             &catalog_and_schema("My_Catalog", "My_Schema"),
         );
@@ -902,10 +983,90 @@ mod tests {
     fn list_relations_sql_omits_catalog_predicate_when_unknown() {
         // No catalog means we cannot scope; fall back to the schema-only filter
         // rather than emitting an empty/incorrect catalog predicate.
-        let sql = list_relations_sql(ResolvedQuoting::trues(), &catalog_and_schema("", "main"));
+        let sql = list_relations_sql(
+            AdapterType::DuckDB,
+            ResolvedQuoting::trues(),
+            &catalog_and_schema("", "main"),
+        );
         assert!(sql.ends_with("WHERE table_schema = 'main'"));
         assert!(!sql.contains("lower(table_catalog)"));
         assert!(!sql.contains(" AND "));
+    }
+
+    #[test]
+    fn motherduck_metadata_sql_uses_duckdb_functions_and_escapes_literals() {
+        let sql = list_relations_sql(
+            AdapterType::MotherDuck,
+            ResolvedQuoting::falses(),
+            &catalog_and_schema("team's data", "Sales'Ops"),
+        );
+        assert!(sql.contains("FROM duckdb_tables()"));
+        assert!(sql.contains("FROM duckdb_views()"));
+        assert!(!sql.contains("information_schema"));
+        assert!(sql.contains("lower(schema_name) = lower('sales''ops')"));
+        assert!(sql.contains("lower(database_name) = lower('team''s data')"));
+
+        let sql = motherduck::list_schemas_sql("team's data");
+        assert_eq!(
+            sql,
+            "SELECT schema_name FROM duckdb_schemas() \
+             WHERE lower(database_name) = lower('team''s data')"
+        );
+
+        let sql = motherduck::get_relation_sql(
+            ResolvedQuoting::falses(),
+            "team's data",
+            "sales'ops",
+            "order's",
+        );
+        assert!(sql.contains("FROM duckdb_tables()"));
+        assert!(sql.contains("FROM duckdb_views()"));
+        assert!(sql.contains("lower(schema_name) = lower('sales''ops')"));
+        assert!(sql.contains("lower(table_name) = lower('order''s')"));
+        assert!(sql.contains("lower(view_name) = lower('order''s')"));
+    }
+
+    #[test]
+    fn motherduck_describe_query_and_result_preserve_duckdb_types() {
+        assert_eq!(
+            motherduck::describe_query_sql(" select 1 as id; "),
+            "DESCRIBE select 1 as id"
+        );
+
+        let batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new("column_name", DataType::Utf8, false),
+                Field::new("column_type", DataType::Utf8, false),
+            ])),
+            vec![
+                Arc::new(StringArray::from(vec!["id", "payload"])),
+                Arc::new(StringArray::from(vec!["BIGINT", "STRUCT(a INTEGER)"])),
+            ],
+        )
+        .unwrap();
+        let columns = columns_from_duckdb_describe(AdapterType::MotherDuck, &batch).unwrap();
+        assert_eq!(columns[0].name(), "id");
+        assert_eq!(columns[0].dtype(), "BIGINT");
+        assert_eq!(columns[1].name(), "payload");
+        assert_eq!(columns[1].dtype(), "STRUCT(a INTEGER)");
+    }
+
+    #[test]
+    fn motherduck_catalog_accepts_endpoint_bigint_column_indices() {
+        let batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new(
+                "column_index",
+                DataType::Int64,
+                false,
+            )])),
+            vec![Arc::new(Int64Array::from(vec![0_i64, 1]))],
+        )
+        .unwrap();
+
+        assert_eq!(
+            catalog_column_indices(AdapterType::MotherDuck, &batch).unwrap(),
+            vec![0_i128, 1]
+        );
     }
 
     fn with_view(yaml: &str, test: impl FnOnce(&DbtCatalogsView<'_>)) {

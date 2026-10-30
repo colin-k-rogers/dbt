@@ -1216,9 +1216,10 @@ impl AdapterImpl {
                 // See: https://github.com/dbt-labs/dbt-core/issues/14631
                 self.list_schemas_via_adbc(state, database)
             }
-            Snowflake | Databricks | Redshift | Spark | DuckDB | MotherDuck | Postgres
-            | Salesforce | Fabric | ClickHouse | Exasol | Athena | Starburst | Trino
-            | Datafusion | Dremio | Oracle | LakeCompute | Bigquery => {
+            MotherDuck => metadata::motherduck::list_schemas(self, state, database),
+            Snowflake | Databricks | Redshift | Spark | DuckDB | Postgres | Salesforce | Fabric
+            | ClickHouse | Exasol | Athena | Starburst | Trino | Datafusion | Dremio | Oracle
+            | LakeCompute | Bigquery => {
                 use crate::macro_exec::execute_macro_wrapper;
                 use minijinja::value::{Kwargs, Value};
 
@@ -1762,48 +1763,61 @@ impl AdapterImpl {
             }
         }
 
-        // Spark (Hive metastore) has no ANSI `information_schema`
-        if matches!(self.adapter_type(), Spark) {
-            let result =
-                execute_macro_wrapper(state, &[Value::from(schema)], "check_schema_exists_like")?;
-            return Ok(Value::from(
-                self.list_schemas_inner(result)?.iter().any(|s| s == schema),
-            ));
-        }
+        match self.adapter_type() {
+            MotherDuck => {
+                let exists = self
+                    .list_schemas(state, database)?
+                    .iter()
+                    .any(|candidate| candidate.eq_ignore_ascii_case(schema));
+                Ok(Value::from(exists))
+            }
+            // Spark (Hive metastore) has no ANSI `information_schema`
+            Spark => {
+                let result = execute_macro_wrapper(
+                    state,
+                    &[Value::from(schema)],
+                    "check_schema_exists_like",
+                )?;
+                Ok(Value::from(
+                    self.list_schemas_inner(result)?.iter().any(|s| s == schema),
+                ))
+            }
+            _ => {
+                // FIXME:
+                // 1. This is used in dbt Core 1.0 as just a "container" for a database/schema,
+                // but there is no actual "Relation" since it has no identifier. Using it here
+                // is wrong in principle.
+                //
+                // 2. this thing is hardcoded here but it's all BigQuery-specific, even though
+                // other platforms use it too
+                let info_schema = Relation::new(
+                    self.adapter_type(),
+                    database.to_string(),
+                    "INFORMATION_SCHEMA".to_string(),
+                    None::<String>,
+                )
+                .with_quoting(Policy::falses());
 
-        // FIXME:
-        // 1. This is used in dbt Core 1.0 as just a "container" for a database/schema,
-        // but there is no actual "Relation" since it has no identifier. Using it here
-        // is wrong in principle.
-        //
-        // 2. this thing is hardcoded here but it's all BigQuery-specific, even though
-        // other platforms use it too
-        let info_schema = Relation::new(
-            self.adapter_type(),
-            database.to_string(),
-            "INFORMATION_SCHEMA".to_string(),
-            None::<String>,
-        )
-        .with_quoting(Policy::falses());
+                let (package_name, macro_name) = self.check_schema_exists_macro(state, &[])?;
+                let batch = execute_macro_wrapper_with_package(
+                    state,
+                    &[
+                        RelationObject::new(Arc::new(info_schema)).into_value(),
+                        Value::from(schema),
+                    ],
+                    &macro_name,
+                    &package_name,
+                )?;
 
-        let (package_name, macro_name) = self.check_schema_exists_macro(state, &[])?;
-        let batch = execute_macro_wrapper_with_package(
-            state,
-            &[
-                RelationObject::new(Arc::new(info_schema)).into_value(),
-                Value::from(schema),
-            ],
-            &macro_name,
-            &package_name,
-        )?;
-
-        match batch.first_value_as_i64() {
-            Some(0) => Ok(Value::from(false)),
-            Some(1) => Ok(Value::from(true)),
-            _ => Err(minijinja::Error::new(
-                minijinja::ErrorKind::ReturnValue,
-                "invalid return value",
-            )),
+                match batch.first_value_as_i64() {
+                    Some(0) => Ok(Value::from(false)),
+                    Some(1) => Ok(Value::from(true)),
+                    _ => Err(minijinja::Error::new(
+                        minijinja::ErrorKind::ReturnValue,
+                        "invalid return value",
+                    )),
+                }
+            }
         }
     }
 
@@ -2315,6 +2329,7 @@ impl AdapterImpl {
             // TODO: Should we add the schema that was fetched here to the schema cache
             // to avoid further remote lookups?
             Bigquery => self.bigquery_get_columns_in_relation_via_adbc(state, relation),
+            MotherDuck => metadata::motherduck::relation_columns(self, state, relation),
             _ => self.get_columns_in_relation_via_macro(state, relation),
         }
     }
@@ -3946,6 +3961,12 @@ impl AdapterImpl {
                         Column::new(self.adapter_type(), name, type_text, None, None, None)
                     })
                     .collect())
+            }
+            Impl(MotherDuck, engine) => {
+                let describe_sql = metadata::motherduck::describe_query_sql(sql);
+                let batch =
+                    engine.execute(Some(state), conn.as_mut(), ctx, &describe_sql, token)?;
+                metadata::duckdb::columns_from_duckdb_describe(MotherDuck, &batch)
             }
             Impl(_, engine) => {
                 let (_, table) = self.execute_inner(
