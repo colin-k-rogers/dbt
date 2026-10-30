@@ -58,17 +58,7 @@ fn catalog_attach_sql(view: &DbtCatalogsView<'_>) -> AdapterResult<Vec<String>> 
         .iter()
         .filter(|catalog| catalog.catalog_type == CatalogType::MotherDuck)
     {
-        let config = catalog
-            .config_block("motherduck")
-            .expect("validated MotherDuck catalogs have a motherduck config block");
-        let database = config
-            .get("database")
-            .and_then(dbt_yaml::Value::as_str)
-            .unwrap_or(catalog.name);
-        let alias = config
-            .get("catalog_database")
-            .and_then(dbt_yaml::Value::as_str)
-            .unwrap_or(database);
+        let (database, alias) = crate::catalog_relation::motherduck_attach_names(catalog)?;
         let collision_key = alias.to_lowercase();
         if let Some(prior) = seen_aliases.insert(collision_key, catalog.name) {
             return Err(config_error(format!(
@@ -78,8 +68,8 @@ fn catalog_attach_sql(view: &DbtCatalogsView<'_>) -> AdapterResult<Vec<String>> 
         }
 
         let database =
-            dbt_adapter_sql::ident::escape_string_literal(database, AdapterType::MotherDuck);
-        let alias = dbt_adapter_sql::ident::quote_identifier(alias, AdapterType::MotherDuck);
+            dbt_adapter_sql::ident::escape_string_literal(&database, AdapterType::MotherDuck);
+        let alias = dbt_adapter_sql::ident::quote_identifier(&alias, AdapterType::MotherDuck);
         statements.push(format!("ATTACH IF NOT EXISTS 'md:{database}' AS {alias}"));
     }
 
