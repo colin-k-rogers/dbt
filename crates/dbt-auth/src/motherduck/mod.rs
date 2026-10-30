@@ -203,9 +203,12 @@ fn parse_auth<'a>(
 
 fn apply_connection_args(
     _config: &AdapterConfig,
-    builder: database::Builder,
+    mut builder: database::Builder,
     _warning_printer: &dyn AuthWarningPrinter,
 ) -> Result<database::Builder, AuthError> {
+    // The endpoint rejects binary COPY for query results. Set this on the
+    // database so session init inherits it, not only later statements.
+    builder.with_named_option(dbt_adbc::postgres::USE_COPY, "false")?;
     Ok(builder)
 }
 
@@ -276,6 +279,15 @@ mod tests {
             "single"
         ));
         assert!(!debug.contains("secret/token"));
+        assert!(builder.other.iter().any(|(key, value)| {
+            matches!(
+                (key, value),
+                (
+                    adbc_core::options::OptionDatabase::Other(name),
+                    adbc_core::options::OptionValue::String(value),
+                ) if name == dbt_adbc::postgres::USE_COPY && value == "false"
+            )
+        }));
     }
 
     #[test]
