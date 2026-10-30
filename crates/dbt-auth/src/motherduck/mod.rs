@@ -194,27 +194,9 @@ fn parse_auth<'a>(
         token: optional_non_empty(config, "token")?,
         session_name,
         port,
-        user: match config.get_str("user") {
-            Some(user) if !user.trim().is_empty() && !user.contains('\0') => user,
-            Some(_) => {
-                return Err(AuthError::config(
-                    "user must be a non-empty string without NUL characters",
-                ));
-            }
-            None => "postgres",
-        },
+        user: optional_non_empty(config, "user")?.unwrap_or("postgres"),
         database,
-        sslrootcert: match config.get_str("sslrootcert") {
-            Some(sslrootcert) if !sslrootcert.trim().is_empty() && !sslrootcert.contains('\0') => {
-                sslrootcert
-            }
-            Some(_) => {
-                return Err(AuthError::config(
-                    "sslrootcert must be a non-empty string without NUL characters",
-                ));
-            }
-            None => "system",
-        },
+        sslrootcert: optional_non_empty(config, "sslrootcert")?.unwrap_or("system"),
         connect_timeout,
     })
 }

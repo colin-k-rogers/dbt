@@ -2206,16 +2206,18 @@ fn missing(field: &str) -> String {
     format!("In file `profiles.yml`, field `{field}` is required.")
 }
 
-/// Host shown as `target.host`. A region leaves the connection URI without a
-/// host and lets the driver resolve `pg.<region>-aws.motherduck.com`.
-fn motherduck_target_host(host: Option<&str>, region: Option<&str>) -> Result<String, String> {
-    match (host, region) {
-        (Some(host), None) => Ok(host.to_string()),
-        (None, Some(region)) => Ok(format!("pg.{region}-aws.motherduck.com")),
-        (Some(_), Some(_)) => {
-            Err("In file `profiles.yml`, set `host` or `region`, not both.".to_string())
+impl MotherDuckDbConfig {
+    /// Host shown as `target.host`. A region leaves the connection URI without a
+    /// host and lets the driver resolve `pg.<region>-aws.motherduck.com`.
+    fn target_host(&self) -> Result<String, String> {
+        match (self.host.as_deref(), self.region.as_deref()) {
+            (Some(host), None) => Ok(host.to_string()),
+            (None, Some(region)) => Ok(format!("pg.{region}-aws.motherduck.com")),
+            (Some(_), Some(_)) => {
+                Err("In file `profiles.yml`, set `host` or `region`, not both.".to_string())
+            }
+            (None, None) => Err(missing("host or region")),
         }
-        (None, None) => Err(missing("host or region")),
     }
 }
 
@@ -2327,9 +2329,8 @@ impl TryFrom<DbConfig> for TargetContext {
             }
 
             DbConfig::MotherDuck(config) => {
+                let host = config.target_host()?;
                 let database = config.database.ok_or_else(|| missing("database"))?;
-                let host =
-                    motherduck_target_host(config.host.as_deref(), config.region.as_deref())?;
                 Ok(TargetContext::Postgres(PostgresTargetEnv {
                     dbname: database.clone(),
                     host,
