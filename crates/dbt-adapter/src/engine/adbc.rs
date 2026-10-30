@@ -1005,6 +1005,7 @@ mod cloud_credential_tests {
 
 #[cfg(test)]
 mod motherduck_live_tests {
+    use std::path::Path;
     use std::sync::Arc;
 
     use adbc_core::options::OptionConnection;
@@ -1019,6 +1020,8 @@ mod motherduck_live_tests {
     use crate::engine::query_comment::QueryCommentConfig;
     use crate::sql_types::DefaultTypeOps;
     use crate::stmt_splitter::DefaultStmtSplitter;
+
+    const ATTACH_TEST_ALIAS: &str = "__dbt_catalog_attach_test";
 
     fn live_config() -> Option<AdapterConfig> {
         let required = [
@@ -1062,11 +1065,34 @@ mod motherduck_live_tests {
         )
     }
 
+    fn load_live_attach_catalog() -> Option<()> {
+        let database = std::env::var("DBT_MOTHERDUCK_ATTACH_DATABASE").ok()?;
+        let database =
+            serde_json::to_string(&database).expect("database name is JSON serializable");
+        let yaml = dbt_yaml::from_str(&format!(
+            r#"
+catalogs:
+  - name: live_attach
+    type: motherduck
+    table_format: default
+    config:
+      motherduck:
+        database: {database}
+        catalog_database: {ATTACH_TEST_ALIAS}
+"#
+        ))
+        .expect("valid live-test catalogs.yml");
+        crate::load_catalogs::load_catalogs(yaml, Path::new("catalogs.yml"), None)
+            .expect("valid live-test MotherDuck catalog");
+        Some(())
+    }
+
     #[dbt_runtime::worker_test]
     fn production_auth_and_engine_execute_against_motherduck() -> AdapterResult<()> {
         let Some(config) = live_config() else {
             return Ok(());
         };
+        let test_catalog_attach = load_live_attach_catalog().is_some();
         let engine = live_engine(config);
         let mut connection =
             engine.new_connection(None, Some("motherduck-live-test".to_string()))?;
@@ -1081,6 +1107,22 @@ mod motherduck_live_tests {
             token.clone(),
         )?;
         assert_eq!(setting.column(0).as_string::<i32>().value(0), "false");
+
+        if test_catalog_attach {
+            let attached = engine.execute(
+                None,
+                connection.as_mut(),
+                &ctx,
+                &format!(
+                    "SELECT database_name FROM duckdb_databases() WHERE database_name = '{ATTACH_TEST_ALIAS}'"
+                ),
+                token.clone(),
+            )?;
+            assert_eq!(
+                attached.column(0).as_string::<i32>().value(0),
+                ATTACH_TEST_ALIAS
+            );
+        }
 
         let name = format!("__dbt_engine_motherduck_{}", std::process::id());
         let table = format!("main.{name}");
