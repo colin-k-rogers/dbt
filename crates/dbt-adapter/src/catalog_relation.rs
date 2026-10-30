@@ -1182,17 +1182,20 @@ fn from_model_config_and_catalogs_default(
                 Some(catalog_name) => catalog_name,
             }
         }
-        AdapterType::MotherDuck => match model_catalog_name(model, AdapterType::MotherDuck) {
-            None => return Ok(CatalogRelation::default_catalog_relation_motherduck()),
+        // Lake compute behaves as DuckDB-backed for relation-building purposes.
+        adapter_type @ (AdapterType::MotherDuck
+        | AdapterType::DuckDB
+        | AdapterType::LakeCompute) => match model_catalog_name(model, adapter_type) {
+            None => {
+                return Ok(match adapter_type {
+                    AdapterType::MotherDuck => {
+                        CatalogRelation::default_catalog_relation_motherduck()
+                    }
+                    _ => CatalogRelation::default_catalog_relation_duckdb(),
+                });
+            }
             Some(catalog_name) => catalog_name,
         },
-        // Lake compute behaves as DuckDB-backed for relation-building purposes.
-        AdapterType::DuckDB | AdapterType::LakeCompute => {
-            match model_catalog_name(model, adapter_type) {
-                None => return Ok(CatalogRelation::default_catalog_relation_duckdb()),
-                Some(catalog_name) => catalog_name,
-            }
-        }
         AdapterType::Spark => match model_catalog_name(model, AdapterType::Spark) {
             None => return Ok(CatalogRelation::default_catalog_relation_spark()),
             Some(catalog_name) => catalog_name,
@@ -1489,6 +1492,15 @@ fn reject_unsupported_databricks_hive_model_fields(model: &Value) -> AdapterResu
     Ok(())
 }
 
+pub(crate) fn motherduck_attach_names(
+    catalog: &CatalogSpecView<'_>,
+) -> AdapterResult<(String, String)> {
+    let motherduck = require_platform_block(catalog, catalog.name, "motherduck")?;
+    let database = get_yaml_str(motherduck, "database").unwrap_or(catalog.name);
+    let alias = get_yaml_str(motherduck, FIELD_CATALOG_DATABASE).unwrap_or(database);
+    Ok((database.to_string(), alias.to_string()))
+}
+
 impl CatalogRelation {
     fn build_spark_with_catalogs(
         catalog: &CatalogSpecView<'_>,
@@ -1519,16 +1531,11 @@ impl CatalogRelation {
         catalog: &CatalogSpecView<'_>,
         catalog_name: &str,
     ) -> AdapterResult<CatalogRelation> {
-        let motherduck = require_platform_block(catalog, catalog_name, "motherduck")?;
-        let database = get_yaml_str(motherduck, "database").unwrap_or(catalog_name);
-        let catalog_database = get_yaml_str(motherduck, FIELD_CATALOG_DATABASE).unwrap_or(database);
+        let (database, catalog_database) = motherduck_attach_names(catalog)?;
 
         let mut adapter_properties = BTreeMap::new();
-        adapter_properties.insert("database".to_string(), database.to_string());
-        adapter_properties.insert(
-            "attached_database".to_string(),
-            catalog_database.to_string(),
-        );
+        adapter_properties.insert("database".to_string(), database);
+        adapter_properties.insert("attached_database".to_string(), catalog_database.clone());
 
         Ok(CatalogRelation {
             adapter_type: AdapterType::MotherDuck,
@@ -1538,7 +1545,7 @@ impl CatalogRelation {
             table_format: catalog.table_format,
             file_format: None,
             external_volume: None,
-            catalog_database: Some(catalog_database.to_string()),
+            catalog_database: Some(catalog_database),
             lakehouse_catalog: None,
             base_location: None,
             adapter_properties,
