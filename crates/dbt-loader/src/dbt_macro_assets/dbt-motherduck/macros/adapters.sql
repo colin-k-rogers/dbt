@@ -91,7 +91,6 @@
 {% endmacro %}
 
 {% macro get_column_names() %}
-  {# loop through user_provided_columns to get column names #}
     {%- set user_provided_columns = model['columns'] -%}
     (
     {% for i in user_provided_columns %}
@@ -301,7 +300,6 @@
 {%- endmacro %}
 
 {% macro motherduck__apply_grants(relation, grant_config, should_revoke=True) %}
-    {#-- If grant_config is {} or None, this is a no-op --#}
     {% if grant_config %}
       {{ exceptions.warn('Grants for relations are not supported by MotherDuck') }}
     {% endif %}
