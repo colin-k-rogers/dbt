@@ -49,11 +49,8 @@ impl MotherDuckAuthIR<'_> {
                     }
                 }
 
-                // The driver takes the token from the password option ahead of
-                // the URI. The libpq driver rejects a `username` database
-                // option, so the profile `user` is not sent. Leaving the token
-                // out of the URI keeps it off the connection string. With no
-                // password option the driver reads MOTHERDUCK_TOKEN.
+                // Token is the password option, not a URI query value.
+                // https://github.com/adbc-drivers/motherduck/pull/36
                 builder.with_uri(uri);
                 if let Some(token) = token {
                     builder.with_password(token);
