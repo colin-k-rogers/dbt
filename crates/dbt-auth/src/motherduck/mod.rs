@@ -12,7 +12,6 @@ enum MotherDuckAuthIR<'a> {
         region: Option<&'a str>,
         token: Option<&'a str>,
         port: u16,
-        user: &'a str,
         database: &'a str,
         sslrootcert: &'a str,
         connect_timeout: Cow<'a, str>,
@@ -32,7 +31,6 @@ impl MotherDuckAuthIR<'_> {
                 region,
                 token,
                 port,
-                user,
                 database,
                 sslrootcert,
                 connect_timeout,
@@ -52,11 +50,11 @@ impl MotherDuckAuthIR<'_> {
                 }
 
                 // The driver takes the token from the password option ahead of
-                // the URI, and username replaces the URI user. Leaving both out
-                // of the URI keeps the token off the connection string. With no
+                // the URI. The libpq driver rejects a `username` database
+                // option, so the profile `user` is not sent. Leaving the token
+                // out of the URI keeps it off the connection string. With no
                 // password option the driver reads MOTHERDUCK_TOKEN.
                 builder.with_uri(uri);
-                builder.with_username(user);
                 if let Some(token) = token {
                     builder.with_password(token);
                 }
@@ -194,7 +192,6 @@ fn parse_auth<'a>(
         token: optional_non_empty(config, "token")?,
         session_name,
         port,
-        user: optional_non_empty(config, "user")?.unwrap_or("postgres"),
         database,
         sslrootcert: optional_non_empty(config, "sslrootcert")?.unwrap_or("system"),
         connect_timeout,
@@ -258,7 +255,7 @@ mod tests {
         );
         assert_eq!(auth.backend(), Backend::MotherDuck);
         assert_eq!(builder.backend, Backend::MotherDuck);
-        assert_eq!(builder.username.as_deref(), Some("postgres"));
+        assert_eq!(builder.username, None);
         assert_eq!(builder.password.as_deref(), Some("secret/token"));
         assert_contains!(
             &uri,
@@ -294,7 +291,7 @@ mod tests {
         assert_contains!(&uri, "postgresql:///analytics?");
         assert_contains!(&uri, "port=5432");
         assert!(!uri.contains("pg.us-east-1-aws.motherduck.com"));
-        assert_eq!(builder.username.as_deref(), Some("analyst"));
+        assert_eq!(builder.username, None);
         assert!(named_option(
             &builder,
             dbt_adbc::motherduck::REGION,
