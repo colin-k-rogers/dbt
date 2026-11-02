@@ -49,10 +49,29 @@
       ) as model_subq;
   {% endif %}
   {%- elif language == 'python' -%}
-    {{ exceptions.raise_compiler_error('Python models are not supported by dbt-motherduck') }}
+    {{ py_write_table(temporary=temporary, relation=relation, compiled_code=compiled_code) }}
   {%- else -%}
       {% do exceptions.raise_compiler_error("motherduck__create_table_as macro didn't get supported language, it got %s" % language) %}
   {%- endif -%}
+{% endmacro %}
+
+{% macro py_write_table(temporary, relation, compiled_code) -%}
+{{ compiled_code }}
+
+def materialize(df, con):
+    try:
+        import pyarrow
+        pyarrow_available = True
+    except ImportError:
+        pyarrow_available = False
+    finally:
+        if pyarrow_available and isinstance(df, pyarrow.Table):
+            # https://github.com/duckdb/duckdb/issues/6584
+            import pyarrow.dataset
+    tmp_name = '__dbt_python_model_df_' + '{{ relation.identifier }}'
+    con.register(tmp_name, df)
+    con.execute('create table {{ relation }} as select * from ' + tmp_name)
+    con.unregister(tmp_name)
 {% endmacro %}
 
 {% macro motherduck__create_view_as(relation, sql) -%}
