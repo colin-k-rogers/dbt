@@ -1,0 +1,7 @@
+kind: Features
+body: Run MotherDuck Python models as Flights.
+time: 2026-11-01T16:32:13.424601-08:00
+custom:
+    author: colin-k-rogers
+    issue: "16817"
+    project: dbt-core

@@ -1,6 +1,6 @@
 {# Adapted from dbt-duckdb commit acdab5dfc85715572bbf43fcf2b318a5ed1bfa16,
    dbt/include/duckdb/macros/materializations/table.sql. #}
-{% materialization table, adapter="motherduck", supported_languages=['sql'] %}
+{% materialization table, adapter="motherduck", supported_languages=['sql', 'python'] %}
 
   {%- set language = model['language'] -%}
 

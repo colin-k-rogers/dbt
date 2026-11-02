@@ -1195,6 +1195,15 @@ impl AdapterImpl {
                 model,
                 compiled_code,
             ),
+            Impl(MotherDuck, _) => python::motherduck::submit_python_job(
+                self,
+                ctx,
+                conn,
+                state,
+                model,
+                compiled_code,
+                token,
+            ),
             Replay(Bigquery | Databricks, replay) => {
                 replay.replay_submit_python_job(ctx, conn.as_mut(), state, model, compiled_code)
             }
@@ -1205,9 +1214,9 @@ impl AdapterImpl {
                 _,
             )
             | Impl(
-                adapter_type @ (Postgres | Redshift | Salesforce | DuckDB | MotherDuck
-                | LakeCompute | Spark | Fabric | ClickHouse | Exasol | Starburst
-                | Athena | Trino | Datafusion | Dremio | Oracle),
+                adapter_type @ (Postgres | Redshift | Salesforce | DuckDB | LakeCompute | Spark
+                | Fabric | ClickHouse | Exasol | Starburst | Athena | Trino
+                | Datafusion | Dremio | Oracle),
                 _,
             ) => Err(AdapterError::new(
                 AdapterErrorKind::Internal,
