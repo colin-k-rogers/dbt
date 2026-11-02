@@ -973,6 +973,10 @@ pub struct MotherDuckDbConfig {
     #[serde(default = "default_motherduck_user")]
     pub user: Option<String>,
     pub token: Option<String>,
+    /// Authentication method. `token` sends `token` as the driver password option.
+    /// `externalbrowser` is accepted by the profile and not implemented yet.
+    #[serde(default = "default_motherduck_method")]
+    pub method: Option<String>,
     pub database: Option<String>,
     pub schema: Option<String>,
     #[serde(default = "default_motherduck_sslrootcert")]
@@ -988,6 +992,10 @@ pub struct MotherDuckDbConfig {
     /// Passed to the driver as `adbc.motherduck.session_name`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session_name: Option<String>,
+}
+
+fn default_motherduck_method() -> Option<String> {
+    Some("token".to_string())
 }
 
 fn default_motherduck_port() -> Option<StringOrInteger> {
