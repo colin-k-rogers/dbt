@@ -16,7 +16,14 @@ enum MotherDuckAuthIR<'a> {
         sslrootcert: &'a str,
         connect_timeout: Cow<'a, str>,
         session_name: Option<&'a str>,
+        method: MotherDuckAuthMethod,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MotherDuckAuthMethod {
+    Token,
+    ExternalBrowser,
 }
 
 impl MotherDuckAuthIR<'_> {
@@ -35,7 +42,13 @@ impl MotherDuckAuthIR<'_> {
                 sslrootcert,
                 connect_timeout,
                 session_name,
+                method,
             } => {
+                if method == MotherDuckAuthMethod::ExternalBrowser {
+                    return Err(AuthError::config(
+                        "MotherDuck externalbrowser authentication is not implemented yet.",
+                    ));
+                }
                 let mut uri = endpoint_uri(host, port, database)?;
                 {
                     let mut query = uri.query_pairs_mut();
@@ -192,7 +205,23 @@ fn parse_auth<'a>(
         database,
         sslrootcert: optional_non_empty(config, "sslrootcert")?.unwrap_or("system"),
         connect_timeout,
+        method: auth_method(config)?,
     })
+}
+
+fn auth_method(config: &AdapterConfig) -> Result<MotherDuckAuthMethod, AuthError> {
+    match config
+        .get_str("method")
+        .unwrap_or("token")
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "token" => Ok(MotherDuckAuthMethod::Token),
+        "externalbrowser" => Ok(MotherDuckAuthMethod::ExternalBrowser),
+        other => Err(AuthError::config(format!(
+            "MotherDuck authentication method '{other}' is not supported. Use 'token' or 'externalbrowser'."
+        ))),
+    }
 }
 
 fn apply_connection_args(
@@ -406,5 +435,42 @@ mod tests {
                 .expect_err("invalid value must be rejected");
             assert_eq!(err.msg(), expected);
         }
+    }
+
+    #[test]
+    fn explicit_token_method_sends_the_password_option() {
+        let mut mapping = config().repr().clone();
+        mapping.insert("method".into(), "token".into());
+        let builder = MotherDuckAuth::new(Box::new(crate::NoopAuthWarningPrinter))
+            .configure(&AdapterConfig::new(mapping))
+            .expect("token method");
+        assert_eq!(builder.password.as_deref(), Some("secret/token"));
+    }
+
+    #[test]
+    fn externalbrowser_is_recognized_and_not_implemented() {
+        let mut mapping = config().repr().clone();
+        mapping.insert("method".into(), "externalbrowser".into());
+        let err = MotherDuckAuth::new(Box::new(crate::NoopAuthWarningPrinter))
+            .configure(&AdapterConfig::new(mapping))
+            .expect_err("externalbrowser is a stub");
+        assert_eq!(
+            err.msg(),
+            "MotherDuck externalbrowser authentication is not implemented yet."
+        );
+    }
+
+    #[test]
+    fn unknown_method_is_rejected() {
+        let mut mapping = config().repr().clone();
+        mapping.insert("method".into(), "oauth".into());
+        let err = MotherDuckAuth::new(Box::new(crate::NoopAuthWarningPrinter))
+            .configure(&AdapterConfig::new(mapping))
+            .expect_err("unknown method");
+        assert!(
+            err.msg().contains("not supported"),
+            "{}",
+            err.msg()
+        );
     }
 }
