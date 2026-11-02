@@ -677,11 +677,17 @@ impl AdapterImpl {
         // catalogs holding them server-side -- so there is no profile `attach:`
         // entry and, in the Lake Compute + MDLS setup, no catalogs.yml entry for
         // the DuckDB lookups below to find.
-        if self.adapter_type() == LakeCompute {
-            return duckdb_table_format_for_database(database).unwrap_or("iceberg");
-        }
-        if self.adapter_type() != DuckDB {
-            return "default";
+        match self.adapter_type() {
+            LakeCompute => {
+                return duckdb_table_format_for_database(database).unwrap_or("iceberg");
+            }
+            // MotherDuck DuckLake catalogs are attached account databases. The alias
+            // is the relation database, and catalogs.yml says whether that alias is ducklake.
+            MotherDuck => {
+                return duckdb_table_format_for_database(database).unwrap_or("default");
+            }
+            DuckDB => {}
+            _ => return "default",
         }
 
         let path_config = self.get_db_config("path");
