@@ -14,6 +14,7 @@ use arrow::array::Array;
 use arrow::util::display::{ArrayFormatter, FormatOptions};
 use arrow_array::RecordBatch;
 use dbt_adbc::QueryCtx;
+use dbt_adapter_core::AdapterType;
 use dbt_common::cancellation::CancellationToken;
 use dbt_common::{AdapterError, AdapterErrorKind, AdapterResult};
 use dbt_yaml::Span;
@@ -238,7 +239,11 @@ fn settings_statements(adapter: &AdapterImpl) -> Vec<String> {
         .filter_map(|(key, value)| {
             let key = key.as_str()?;
             let value = yaml_scalar(value)?;
-            Some(format!("SET {key} = '{}'", escape_sql(&value)))
+            Some(format!(
+                "SET {} = '{}'",
+                dbt_adapter_sql::ident::quote_identifier(key, AdapterType::MotherDuck),
+                escape_sql(&value)
+            ))
         })
         .collect()
 }
@@ -709,7 +714,7 @@ fn values_match(actual: &Option<String>, expected: &Expected) -> bool {
 }
 
 fn escape_sql(value: &str) -> String {
-    value.replace('\'', "''")
+    dbt_adapter_sql::ident::escape_string_literal(value, AdapterType::MotherDuck)
 }
 
 fn python_list(items: &[String]) -> String {

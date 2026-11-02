@@ -80,14 +80,20 @@ fn dispatch_uses_motherduck_macros_without_duckdb() {
 }
 
 #[test]
-fn create_table_as_rejects_python_models() {
-    let err = harness()
+fn create_table_as_emits_the_python_materializer() {
+    let harness = harness();
+    let ctx = harness
+        .materialization_context("orders", "pass")
+        .relation_type(RelationType::Table)
+        .build();
+    let rendered = harness
         .render(
-            "{{ motherduck__create_table_as(false, none, 'pass', 'python') }}",
-            BTreeMap::<String, Value>::new(),
+            "{{ motherduck__create_table_as(false, this, compiled_code, 'python') }}",
+            ctx,
         )
-        .expect_err("Python models must be rejected");
-    assert!(err.to_string().contains("Python models are not supported"));
+        .expect("Python create_table_as should render");
+    assert!(rendered.contains("def materialize"), "{rendered}");
+    assert!(rendered.contains("pass"), "{rendered}");
 }
 
 #[test]
@@ -460,7 +466,7 @@ fn embedded_duckdb_keeps_temp_create_and_dml_in_one_batch() {
 }
 
 #[test]
-fn dispatched_create_table_as_rejects_python_models() {
+fn dispatched_create_table_as_emits_the_python_materializer() {
     let harness = MacroTestHarness::for_adapter(AdapterType::MotherDuck)
         .load_all_macros()
         .with_stub_functions()
@@ -472,16 +478,15 @@ fn dispatched_create_table_as_rejects_python_models() {
         .with("model", model("python"))
         .build();
 
-    let error = harness
+    let rendered = harness
         .render(
             "{{ create_table_as(false, this, compiled_code, 'python') }}",
             ctx,
         )
-        .expect_err("MotherDuck endpoint must reject local Python execution");
+        .expect("dispatched Python create_table_as should render");
+    assert!(rendered.contains("def materialize"), "{rendered}");
     assert!(
-        error
-            .to_string()
-            .contains("Python models are not supported"),
-        "{error:?}"
+        rendered.contains("def model(dbt, session): pass"),
+        "{rendered}"
     );
 }
