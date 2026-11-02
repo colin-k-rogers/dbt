@@ -2335,7 +2335,8 @@ impl AdapterImpl {
             // TODO: Should we add the schema that was fetched here to the schema cache
             // to avoid further remote lookups?
             Bigquery => self.bigquery_get_columns_in_relation_via_adbc(state, relation),
-            MotherDuck => metadata::motherduck::relation_columns(self, state, relation),
+            MotherDuck => metadata::motherduck::relation_columns(self, state, relation)
+                .map(|columns| columns.into_iter().map(Arc::new).collect()),
             _ => self.get_columns_in_relation_via_macro(state, relation),
         }
     }
@@ -3934,6 +3935,7 @@ impl AdapterImpl {
                 let batch =
                     engine.execute(Some(state), conn.as_mut(), ctx, &describe_sql, token)?;
                 metadata::duckdb::columns_from_duckdb_describe(MotherDuck, &batch)
+                    .map(|columns| columns.into_iter().map(Arc::new).collect())
             }
             Impl(_, engine) => {
                 let (_, table) = self.execute_inner(
