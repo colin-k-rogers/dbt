@@ -27,8 +27,6 @@
 
   {{ run_hooks(pre_hooks, inside_transaction=False) }}
 
-  -- `BEGIN` happens here:
-  {{ run_hooks(pre_hooks, inside_transaction=True) }}
   {%- set partitioned_by = motherduck__get_partitioned_by(target_relation, false) -%}
   {%- set sorted_by = motherduck__get_sorted_by(target_relation, false) -%}
 
@@ -37,18 +35,17 @@
     {{- create_table_as(False, intermediate_relation, compiled_code, language, partitioned_by=partitioned_by, sorted_by=sorted_by) }}
   {%- endcall %}
 
-  -- cleanup
+  {#-- Drop indexes before the swap so a rename does not trip over them. The
+       two renames then commit or roll back together. --#}
   {% if existing_relation is not none %}
-      {#-- Drop indexes before renaming to avoid dependency errors --#}
       {% do drop_indexes_on_relation(existing_relation) %}
-      {{ adapter.rename_relation(existing_relation, backup_relation) }}
   {% endif %}
 
-  {{ adapter.rename_relation(intermediate_relation, target_relation) }}
+  {% call statement('rename_swap') %}
+    {{ motherduck_dml_explicit_transaction(motherduck__relation_swap_sql(existing_relation, intermediate_relation, target_relation, backup_relation)) }}
+  {% endcall %}
 
   {% do create_indexes(target_relation) %}
-
-  {{ run_hooks(post_hooks, inside_transaction=True) }}
 
   {% set should_revoke = should_revoke(existing_relation, full_refresh_mode=True) %}
   {% do apply_grants(target_relation, grant_config, should_revoke=should_revoke) %}

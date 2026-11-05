@@ -75,11 +75,47 @@
   {%- endcall %}
 {% endmacro %}
 
-{% macro motherduck__rename_relation(from_relation, to_relation) -%}
+{% macro motherduck__rename_sql(from_relation, to_relation) -%}
   {% set target_name = adapter.quote_as_configured(to_relation.identifier, 'identifier') %}
+  alter {{ to_relation.type }} {{ from_relation }} rename to {{ target_name }}
+{%- endmacro %}
+
+{% macro motherduck__rename_relation(from_relation, to_relation) -%}
   {% call statement('rename_relation') -%}
-    alter {{ to_relation.type }} {{ from_relation }} rename to {{ target_name }}
+    {{ motherduck__rename_sql(from_relation, to_relation) }}
   {%- endcall %}
+{% endmacro %}
+
+{# One begin/commit for the backup+promote pair. A single rename is not a swap. #}
+{% macro motherduck__relation_swap_sql(existing_relation, intermediate_relation, target_relation, backup_relation) -%}
+  {% if existing_relation is not none %}
+    {{ motherduck__rename_sql(existing_relation, backup_relation) }};
+  {% endif %}
+  {{ motherduck__rename_sql(intermediate_relation, target_relation) }};
+{%- endmacro %}
+
+{% macro motherduck__in_transaction_hook_sql(hooks) %}
+  {% if hooks is defined and hooks %}
+    {% for hook in hooks | selectattr('transaction', 'equalto', true) %}
+      {% set rendered = render(hook.get('sql')) | trim %}
+      {% if (rendered | length) > 0 %}
+        {{ rendered }};
+      {% endif %}
+    {% endfor %}
+  {% endif %}
+{% endmacro %}
+
+{# Same shape as snowflake_dml_explicit_transaction. Inside-transaction hooks
+   live in this string: adapter.commit() does not keep a transaction open. #}
+{% macro motherduck_dml_explicit_transaction(dml) %}
+  {% set wrapped %}
+    begin;
+    {{ motherduck__in_transaction_hook_sql(pre_hooks) }}
+    {{ dml }};
+    {{ motherduck__in_transaction_hook_sql(post_hooks) }}
+    commit;
+  {% endset %}
+  {{ return(wrapped) }}
 {% endmacro %}
 
 {% macro get_column_names() %}
