@@ -34,6 +34,7 @@ use chrono::DateTime;
 use dbt_adapter::Adapter;
 use dbt_adapter::LATEST_VERSION_POINTER_SUFFIX;
 use dbt_adapter::adapter::NodeOverride;
+use dbt_adapter::adapter::adapter_impl::{clear_motherduck_staging, take_motherduck_staging};
 use dbt_adapter::connection::drop_thread_local_connection;
 use dbt_adapter::relation::{RelationObject, do_create_relation};
 use dbt_adapter::response::AdapterResponse;
@@ -93,10 +94,13 @@ fn execute_materialization_macro(
     node_alias: &str,
     run_path: PathBuf,
 ) -> FsResult<Value> {
+    // A previous node on this thread may have recorded a staging relation it
+    // already dropped. Forget that name before this materialization records its own.
+    clear_motherduck_staging();
     let macro_string = format!("{macro_name}()");
     let expr = jinja_env.compile_expression(&macro_string)?;
-    with_jinja_trace(&run_path, unique_id, |listeners| {
-        expr.eval_with_file_only_stack_frame(context, listeners, run_path.as_path()).map_err(|e| {
+    let result = with_jinja_trace(&run_path, unique_id, |listeners| {
+        expr.eval_with_file_only_stack_frame(&mut *context, listeners, run_path.as_path()).map_err(|e| {
             if e.code.is_database_error() {
                 // Format like dbt-core: show model name and path first, then the raw
                 // database error message indented.
@@ -135,7 +139,41 @@ fn execute_materialization_macro(
                 Box::new(e.with_context(message))
             }
         })
-    })
+    });
+    if result.is_err() {
+        drop_motherduck_staging_after_failure(&jinja_env, context);
+    }
+    result
+}
+
+fn drop_motherduck_staging_after_failure(
+    jinja_env: &JinjaEnv,
+    context: &mut BTreeMap<String, Value>,
+) {
+    let Some((database, schema, identifier)) = take_motherduck_staging() else {
+        return;
+    };
+    context.insert(
+        "__motherduck_staging_database".to_string(),
+        Value::from(database),
+    );
+    context.insert(
+        "__motherduck_staging_schema".to_string(),
+        Value::from(schema),
+    );
+    context.insert(
+        "__motherduck_staging_identifier".to_string(),
+        Value::from(identifier),
+    );
+    if let Err(error) = jinja_env.render_str(
+        "{{ motherduck__drop_staging_relation(__motherduck_staging_database, __motherduck_staging_schema, __motherduck_staging_identifier) }}",
+        context,
+        &[],
+    ) {
+        tracing::warn!(
+            "failed to drop MotherDuck staging relation after materialization error: {error}"
+        );
+    }
 }
 
 fn apply_node_overrides(

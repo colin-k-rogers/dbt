@@ -370,6 +370,50 @@ pub enum InnerAdapter<'a> {
     Replay(AdapterType, &'a dyn Replayer),
 }
 
+fn motherduck_staging_identifier(identifier: &str, batch_id: &str, suffix: &str) -> String {
+    if batch_id.is_empty() {
+        format!("{identifier}__{suffix}")
+    } else {
+        format!("{identifier}__{suffix}__{batch_id}")
+    }
+}
+
+struct MotherduckStaging {
+    database: String,
+    schema: String,
+    identifier: String,
+}
+
+thread_local! {
+    static MOTHERDUCK_STAGING: std::cell::RefCell<Option<MotherduckStaging>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+fn record_motherduck_staging(database: &str, schema: &str, identifier: &str) {
+    MOTHERDUCK_STAGING.with(|slot| {
+        *slot.borrow_mut() = Some(MotherduckStaging {
+            database: database.to_owned(),
+            schema: schema.to_owned(),
+            identifier: identifier.to_owned(),
+        });
+    });
+}
+
+/// Forget a staging relation recorded by [`AdapterImpl::get_temp_relation_path`].
+pub fn clear_motherduck_staging() {
+    MOTHERDUCK_STAGING.with(|slot| *slot.borrow_mut() = None);
+}
+
+/// Take the staging relation recorded for this thread, if the materialization
+/// asked for one. The caller drops it after a failed materialization.
+pub fn take_motherduck_staging() -> Option<(String, String, String)> {
+    MOTHERDUCK_STAGING.with(|slot| {
+        slot.borrow_mut()
+            .take()
+            .map(|staging| (staging.database, staging.schema, staging.identifier))
+    })
+}
+
 impl AdapterImpl {
     pub fn metadata_adapter(&self) -> Option<Box<dyn MetadataAdapter>> {
         match self.inner_adapter() {
@@ -2033,19 +2077,31 @@ impl AdapterImpl {
     }
 
     /// Returns a dict with database/schema/identifier for temp tables on MotherDuck.
+    ///
+    /// The identifier is `{model}__{run_suffix}` or `{model}__{run_suffix}__{batch}`
+    /// so a failed run cannot leave a name the next run tries to create.
+    /// `temp_schema` empty means `dbt_temp`. `meta.temp_schema_name` is passed
+    /// by the MotherDuck macros.
     pub fn get_temp_relation_path(
         &self,
         database: &str,
         identifier: &str,
         batch_id: &str,
+        temp_schema: &str,
     ) -> AdapterResult<BTreeMap<String, Value>> {
+        let schema = if temp_schema.is_empty() {
+            "dbt_temp"
+        } else {
+            temp_schema
+        };
+        let suffix_owned = Uuid::new_v4().to_string();
+        let suffix = suffix_owned.rsplit('-').next().unwrap_or("tmp");
+        let staging_identifier = motherduck_staging_identifier(identifier, batch_id, suffix);
+        record_motherduck_staging(database, schema, &staging_identifier);
         let mut path = BTreeMap::new();
         path.insert("database".to_owned(), Value::from(database));
-        path.insert("schema".to_owned(), Value::from("dbt_temp"));
-        path.insert(
-            "identifier".to_owned(),
-            Value::from(format!("{identifier}__{batch_id}")),
-        );
+        path.insert("schema".to_owned(), Value::from(schema));
+        path.insert("identifier".to_owned(), Value::from(staging_identifier));
         Ok(path)
     }
 
@@ -8576,5 +8632,44 @@ mod sidecar_relation_name_tests {
     #[test]
     fn sidecar_relation_name_leaves_plain_identifiers_unchanged() {
         assert_eq!(sidecar_relation_name("DB", "Sch_1", "t_x"), "DB.Sch_1.t_x");
+    }
+}
+
+#[cfg(test)]
+mod motherduck_staging_tests {
+    use super::{
+        clear_motherduck_staging, motherduck_staging_identifier, record_motherduck_staging,
+        take_motherduck_staging,
+    };
+
+    #[test]
+    fn non_microbatch_name_has_no_trailing_separator() {
+        assert_eq!(
+            motherduck_staging_identifier("orders", "", "abc123"),
+            "orders__abc123"
+        );
+    }
+
+    #[test]
+    fn microbatch_keeps_the_batch_after_the_run_suffix() {
+        assert_eq!(
+            motherduck_staging_identifier("orders", "20240101T000000", "abc123"),
+            "orders__abc123__20240101T000000"
+        );
+    }
+
+    #[test]
+    fn recorded_staging_is_taken_once() {
+        clear_motherduck_staging();
+        record_motherduck_staging("db", "dbt_temp", "orders__abc123");
+        assert_eq!(
+            take_motherduck_staging(),
+            Some((
+                "db".to_owned(),
+                "dbt_temp".to_owned(),
+                "orders__abc123".to_owned()
+            ))
+        );
+        assert!(take_motherduck_staging().is_none());
     }
 }
