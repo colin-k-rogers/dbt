@@ -1,0 +1,7 @@
+kind: Fixes
+body: Match MotherDuck schema lists against the unquoted catalog name.
+time: 2026-11-05T13:50:55.824191-08:00
+custom:
+    author: colin-k-rogers
+    issue: "16817"
+    project: dbt-core

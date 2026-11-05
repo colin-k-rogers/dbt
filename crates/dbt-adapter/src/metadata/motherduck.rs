@@ -3,7 +3,7 @@ use std::sync::Arc;
 use arrow_array::RecordBatch;
 use dbt_adapter_core::AdapterType;
 use dbt_common::cancellation::CancellationToken;
-use dbt_schemas::schemas::common::ResolvedQuoting;
+use dbt_schemas::schemas::common::{ResolvedQuoting, normalize_quote};
 use dbt_schemas::schemas::relations::base::BaseRelation;
 use minijinja::State;
 
@@ -30,7 +30,10 @@ fn execute_sql(
 }
 
 pub(crate) fn list_schemas_sql(database: &str) -> String {
-    let database = dbt_adapter_sql::ident::escape_string_literal(database, AdapterType::MotherDuck);
+    // filter_missing_schemas passes a quoted catalog; duckdb_schemas() stores the raw name.
+    let (database, _) = normalize_quote(false, AdapterType::MotherDuck, database);
+    let database =
+        dbt_adapter_sql::ident::escape_string_literal(&database, AdapterType::MotherDuck);
     let filter = if database.is_empty() {
         String::new()
     } else {

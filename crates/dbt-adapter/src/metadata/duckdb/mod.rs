@@ -941,6 +941,19 @@ mod tests {
             "SELECT schema_name FROM duckdb_schemas() \
              WHERE lower(database_name) = lower('team''s data')"
         );
+        // Quoted catalog from filter_missing_schemas must not stay inside the literal.
+        let sql = motherduck::list_schemas_sql(r#""my_db""#);
+        assert_eq!(
+            sql,
+            "SELECT schema_name FROM duckdb_schemas() \
+             WHERE lower(database_name) = lower('my_db')"
+        );
+        let sql = motherduck::list_schemas_sql(r#""team's data""#);
+        assert_eq!(
+            sql,
+            "SELECT schema_name FROM duckdb_schemas() \
+             WHERE lower(database_name) = lower('team''s data')"
+        );
 
         let sql = motherduck::get_relation_sql(
             ResolvedQuoting::falses(),
