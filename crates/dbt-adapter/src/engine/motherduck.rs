@@ -98,9 +98,27 @@ fn init_sql(config: &AdapterConfig) -> AdapterResult<Vec<String>> {
     init_sql_with_catalogs(config, Some(&view))
 }
 
-fn init_statement_error(index: usize) -> AdapterError {
-    // A driver error may echo the SQL, including a secret setting value.
-    // Keep this error deliberately independent of both the SQL and driver message.
+fn attach_alias(sql: &str) -> Option<&str> {
+    let alias = sql.rsplit_once(" AS ")?.1.trim();
+    let alias = alias
+        .strip_prefix('"')
+        .and_then(|rest| rest.strip_suffix('"'))
+        .unwrap_or(alias);
+    (!alias.is_empty()).then_some(alias)
+}
+
+fn init_statement_error(index: usize, sql: &str, source: Option<&AdapterError>) -> AdapterError {
+    // Settings SQL can contain a secret. Catalog attach failures name the
+    // catalogs.yml alias and the driver error.
+    if let Some(catalog) = attach_alias(sql) {
+        let detail = source.map(AdapterError::message).unwrap_or("failed");
+        return AdapterError::new(
+            AdapterErrorKind::Driver,
+            format!(
+                "MotherDuck session initialization statement {index} failed for catalog '{catalog}': {detail}"
+            ),
+        );
+    }
     AdapterError::new(
         AdapterErrorKind::Driver,
         format!("MotherDuck session initialization statement {index} failed"),
@@ -111,9 +129,9 @@ pub fn apply_init_sql(conn: &mut dyn Connection, config: &AdapterConfig) -> Adap
     for (idx, sql) in init_sql(config)?.iter().enumerate() {
         let mut stmt = conn.new_statement().map_err(adbc_error_to_adapter_error)?;
         stmt.set_sql_query(sql)
-            .map_err(|_| init_statement_error(idx + 1))?;
+            .map_err(|err| init_statement_error(idx + 1, sql, Some(&adbc_error_to_adapter_error(err))))?;
         stmt.execute_update()
-            .map_err(|_| init_statement_error(idx + 1))?;
+            .map_err(|err| init_statement_error(idx + 1, sql, Some(&adbc_error_to_adapter_error(err))))?;
     }
     Ok(())
 }
@@ -170,12 +188,26 @@ settings:
 
     #[test]
     fn execution_errors_do_not_echo_secret_sql_or_driver_errors() {
-        let err = init_statement_error(2);
+        let err = init_statement_error(2, "SET token = 'secret'", None);
         assert_eq!(
             err.message(),
             "MotherDuck session initialization statement 2 failed"
         );
         assert!(!err.message().contains("token"));
+
+        let driver = AdapterError::new(
+            AdapterErrorKind::Driver,
+            "Catalog Error: database 'missing' does not exist",
+        );
+        let err = init_statement_error(
+            1,
+            r#"ATTACH IF NOT EXISTS 'md:missing' AS "analytics""#,
+            Some(&driver),
+        );
+        assert_eq!(
+            err.message(),
+            "MotherDuck session initialization statement 1 failed for catalog 'analytics': Catalog Error: database 'missing' does not exist"
+        );
     }
 
     fn with_catalogs(yaml: &str, f: impl FnOnce(&DbtCatalogsView<'_>)) {
