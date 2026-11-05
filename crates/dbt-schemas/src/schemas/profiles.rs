@@ -238,16 +238,17 @@ impl DbConfig {
                 "retries",
             ],
             // `token` is deliberately absent: dbt debug prints these values.
+            // `user` is absent because a MotherDuck profile has no username.
             AdapterType::MotherDuck => &[
                 "host",
                 "port",
-                "user",
                 "database",
                 "schema",
                 "sslrootcert",
                 "connect_timeout",
                 "region",
                 "session_name",
+                "attach_mode",
             ],
             AdapterType::Bigquery => &[
                 "method",
@@ -970,8 +971,19 @@ pub struct MotherDuckDbConfig {
     pub host: Option<String>,
     #[serde(default = "default_motherduck_port")]
     pub port: Option<StringOrInteger>,
-    #[serde(default = "default_motherduck_user")]
-    pub user: Option<String>,
+    /// Not a MotherDuck credential. Kept so `user` and `username` fail parse
+    /// instead of being ignored.
+    #[serde(
+        default,
+        rename = "user",
+        alias = "username",
+        skip_serializing,
+        deserialize_with = "reject_motherduck_username"
+    )]
+    #[schemars(skip)]
+    #[merge(skip)]
+    #[allow(dead_code)]
+    _username: Option<()>,
     pub token: Option<String>,
     /// Authentication method. `token` sends `token` as the driver password option.
     /// `externalbrowser` is accepted by the profile and not implemented yet.
@@ -979,7 +991,7 @@ pub struct MotherDuckDbConfig {
     pub method: Option<String>,
     pub database: Option<String>,
     pub schema: Option<String>,
-    #[serde(default = "default_motherduck_sslrootcert")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub sslrootcert: Option<String>,
     #[serde(default = "default_motherduck_connect_timeout")]
     pub connect_timeout: Option<StringOrInteger>,
@@ -989,6 +1001,10 @@ pub struct MotherDuckDbConfig {
     /// Mutually exclusive with `host`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub region: Option<String>,
+    /// `single` attaches the named database. `workspace` attaches every
+    /// database in the account. Default `single`.
+    #[serde(default = "default_motherduck_attach_mode")]
+    pub attach_mode: Option<String>,
     /// Passed to the driver as `adbc.motherduck.session_name`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session_name: Option<String>,
@@ -1002,12 +1018,18 @@ fn default_motherduck_port() -> Option<StringOrInteger> {
     Some(StringOrInteger::Integer(5432))
 }
 
-fn default_motherduck_user() -> Option<String> {
-    Some("postgres".to_string())
+fn default_motherduck_attach_mode() -> Option<String> {
+    Some("single".to_string())
 }
 
-fn default_motherduck_sslrootcert() -> Option<String> {
-    Some("system".to_string())
+fn reject_motherduck_username<'de, D>(deserializer: D) -> Result<Option<()>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let _ = <serde::de::IgnoredAny as serde::Deserialize>::deserialize(deserializer)?;
+    Err(serde::de::Error::custom(
+        "MotherDuck profiles do not accept `user` or `username`",
+    ))
 }
 
 fn default_motherduck_connect_timeout() -> Option<StringOrInteger> {
@@ -2357,7 +2379,9 @@ impl TryFrom<DbConfig> for TargetContext {
                 Ok(TargetContext::Postgres(PostgresTargetEnv {
                     dbname: database.clone(),
                     host,
-                    user: config.user.ok_or_else(|| missing("user"))?,
+                    // MotherDuck has no database user. The shared Postgres target
+                    // shape still requires the field.
+                    user: String::new(),
                     port: config.port.ok_or_else(|| missing("port"))?,
                     __common__: CommonTargetContext {
                         database,
@@ -3116,8 +3140,8 @@ schema: main
             panic!("expected MotherDuck config");
         };
         assert_eq!(motherduck.port, Some(StringOrInteger::Integer(5432)));
-        assert_eq!(motherduck.user.as_deref(), Some("postgres"));
-        assert_eq!(motherduck.sslrootcert.as_deref(), Some("system"));
+        assert_eq!(motherduck.sslrootcert, None);
+        assert_eq!(motherduck.attach_mode.as_deref(), Some("single"));
         assert_eq!(
             motherduck.connect_timeout,
             Some(StringOrInteger::Integer(240))
@@ -3142,7 +3166,27 @@ schema: main
         assert_eq!(target.__common__.database, "analytics");
         assert_eq!(target.__common__.schema, "main");
         assert_eq!(target.dbname, "analytics");
+        assert_eq!(target.user, "");
         assert_eq!(target.port, StringOrInteger::Integer(5432));
+    }
+
+    #[test]
+    fn motherduck_profile_rejects_a_username() {
+        for field in ["user", "username"] {
+            let err = dbt_yaml::from_str::<DbConfig>(&format!(
+                "type: motherduck\n\
+                 host: pg.us-east-1-aws.motherduck.com\n\
+                 {field}: analyst\n\
+                 database: analytics\n\
+                 schema: main"
+            ))
+            .expect_err("username must be rejected");
+            assert!(
+                err.to_string()
+                    .contains("MotherDuck profiles do not accept `user` or `username`"),
+                "{field}: {err}"
+            );
+        }
     }
 
     #[test]
@@ -3189,7 +3233,7 @@ schema: main
 type: motherduck
 host: pg.us-east-1-aws.motherduck.com
 port: "6543"
-user: analyst
+attach_mode: workspace
 token: super-secret
 database: analytics
 schema: main
@@ -3209,6 +3253,7 @@ connect_timeout: "30"
             motherduck.connect_timeout,
             Some(StringOrInteger::String("30".to_string()))
         );
+        assert_eq!(motherduck.attach_mode.as_deref(), Some("workspace"));
     }
 
     /// A displayable key can nest a credential: DuckDB's `settings` carries

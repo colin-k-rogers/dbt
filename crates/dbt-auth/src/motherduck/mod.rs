@@ -13,9 +13,10 @@ enum MotherDuckAuthIR<'a> {
         token: Option<&'a str>,
         port: u16,
         database: &'a str,
-        sslrootcert: &'a str,
+        sslrootcert: Option<&'a str>,
         connect_timeout: Cow<'a, str>,
         session_name: Option<&'a str>,
+        attach_mode: &'a str,
         method: MotherDuckAuthMethod,
     },
 }
@@ -42,6 +43,7 @@ impl MotherDuckAuthIR<'_> {
                 sslrootcert,
                 connect_timeout,
                 session_name,
+                attach_mode,
                 method,
             } => {
                 if method == MotherDuckAuthMethod::ExternalBrowser {
@@ -54,8 +56,10 @@ impl MotherDuckAuthIR<'_> {
                     let mut query = uri.query_pairs_mut();
                     query
                         .append_pair("sslmode", "verify-full")
-                        .append_pair("sslrootcert", sslrootcert)
                         .append_pair("connect_timeout", &connect_timeout);
+                    if let Some(sslrootcert) = sslrootcert {
+                        query.append_pair("sslrootcert", sslrootcert);
+                    }
                     // A hostless URL cannot carry a port in its authority.
                     if host.is_none() {
                         query.append_pair("port", &port.to_string());
@@ -68,7 +72,7 @@ impl MotherDuckAuthIR<'_> {
                 if let Some(token) = token {
                     builder.with_password(token);
                 }
-                builder.with_named_option(dbt_adbc::motherduck::ATTACH_MODE, "single")?;
+                builder.with_named_option(dbt_adbc::motherduck::ATTACH_MODE, attach_mode)?;
                 if let Some(region) = region {
                     builder.with_named_option(dbt_adbc::motherduck::REGION, region)?;
                 }
@@ -137,6 +141,11 @@ fn parse_auth<'a>(
     config: &'a AdapterConfig,
     _warning_printer: &dyn AuthWarningPrinter,
 ) -> Result<MotherDuckAuthIR<'a>, AuthError> {
+    if config.contains_key("user") || config.contains_key("username") {
+        return Err(AuthError::config(
+            "MotherDuck profiles do not accept `user` or `username`",
+        ));
+    }
     let host = optional_non_empty(config, "host")?;
     if let Some(host) = host {
         Host::parse(host).map_err(|_| AuthError::config("host is not a valid hostname"))?;
@@ -203,10 +212,20 @@ fn parse_auth<'a>(
         session_name,
         port,
         database,
-        sslrootcert: optional_non_empty(config, "sslrootcert")?.unwrap_or("system"),
+        sslrootcert: optional_non_empty(config, "sslrootcert")?,
         connect_timeout,
+        attach_mode: attach_mode(config)?,
         method: auth_method(config)?,
     })
+}
+
+fn attach_mode(config: &AdapterConfig) -> Result<&str, AuthError> {
+    match config.get_str("attach_mode").unwrap_or("single") {
+        mode @ ("single" | "workspace") => Ok(mode),
+        other => Err(AuthError::config(format!(
+            "MotherDuck attach_mode '{other}' is not supported. Use 'single' or 'workspace'."
+        ))),
+    }
 }
 
 fn auth_method(config: &AdapterConfig) -> Result<MotherDuckAuthMethod, AuthError> {
@@ -288,7 +307,7 @@ mod tests {
             "postgresql://pg.us-east-1-aws.motherduck.com:5432/analytics?"
         );
         assert_contains!(&uri, "sslmode=verify-full");
-        assert_contains!(&uri, "sslrootcert=system");
+        assert!(!uri.contains("sslrootcert="));
         assert_contains!(&uri, "connect_timeout=240");
         assert!(!uri.contains("user="));
         assert!(!uri.contains("password"));
@@ -307,7 +326,6 @@ mod tests {
         mapping.remove("host");
         mapping.insert("region".into(), "us-east-1".into());
         mapping.insert("session_name".into(), "dbt-writer".into());
-        mapping.insert("user".into(), "analyst".into());
 
         let builder = MotherDuckAuth::new(Box::new(crate::NoopAuthWarningPrinter))
             .configure(&AdapterConfig::new(mapping))
@@ -467,10 +485,64 @@ mod tests {
         let err = MotherDuckAuth::new(Box::new(crate::NoopAuthWarningPrinter))
             .configure(&AdapterConfig::new(mapping))
             .expect_err("unknown method");
-        assert!(
-            err.msg().contains("not supported"),
-            "{}",
-            err.msg()
+        assert!(err.msg().contains("not supported"), "{}", err.msg());
+    }
+
+    #[test]
+    fn username_is_rejected() {
+        for field in ["user", "username"] {
+            let mut mapping = config().repr().clone();
+            mapping.insert(field.into(), "analyst".into());
+            let err = MotherDuckAuth::new(Box::new(crate::NoopAuthWarningPrinter))
+                .configure(&AdapterConfig::new(mapping))
+                .expect_err("username must be rejected");
+            assert_eq!(
+                err.msg(),
+                "MotherDuck profiles do not accept `user` or `username`"
+            );
+        }
+    }
+
+    #[test]
+    fn sslrootcert_is_sent_only_when_set() {
+        let mut mapping = config().repr().clone();
+        mapping.insert("sslrootcert".into(), "/certs/root.crt".into());
+        let builder = MotherDuckAuth::new(Box::new(crate::NoopAuthWarningPrinter))
+            .configure(&AdapterConfig::new(mapping))
+            .expect("sslrootcert");
+        assert_contains!(&uri_value(&builder), "sslrootcert=%2Fcerts%2Froot.crt");
+    }
+
+    #[test]
+    fn attach_mode_defaults_to_single_and_accepts_workspace() {
+        let builder = MotherDuckAuth::new(Box::new(crate::NoopAuthWarningPrinter))
+            .configure(&config())
+            .expect("default attach mode");
+        assert!(named_option(
+            &builder,
+            dbt_adbc::motherduck::ATTACH_MODE,
+            "single"
+        ));
+
+        let mut mapping = config().repr().clone();
+        mapping.insert("attach_mode".into(), "workspace".into());
+        let builder = MotherDuckAuth::new(Box::new(crate::NoopAuthWarningPrinter))
+            .configure(&AdapterConfig::new(mapping))
+            .expect("workspace");
+        assert!(named_option(
+            &builder,
+            dbt_adbc::motherduck::ATTACH_MODE,
+            "workspace"
+        ));
+
+        let mut mapping = config().repr().clone();
+        mapping.insert("attach_mode".into(), "SINGLE".into());
+        let err = MotherDuckAuth::new(Box::new(crate::NoopAuthWarningPrinter))
+            .configure(&AdapterConfig::new(mapping))
+            .expect_err("invalid attach mode");
+        assert_eq!(
+            err.msg(),
+            "MotherDuck attach_mode 'SINGLE' is not supported. Use 'single' or 'workspace'."
         );
     }
 }
