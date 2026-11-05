@@ -196,6 +196,11 @@
     {{ return(none) }}
   {%- endif -%}
 
+  {#- Root-level partition_by is the BigQuery config. It is not meta.partition_by. -#}
+  {%- if config.get('partition_by', none) is not none -%}
+    {% do exceptions.raise_compiler_error("MotherDuck does not read root-level partition_by. Set meta.partition_by for a DuckLake relation.") %}
+  {%- endif -%}
+
   {%- set raw = config.get('meta', {}).get('partitioned_by', none) -%}
   {%- if raw is none or raw == '' -%}
     {%- set raw = config.get('meta', {}).get('partition_by', none) -%}
