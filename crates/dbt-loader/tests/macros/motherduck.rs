@@ -5,7 +5,7 @@ use dbt_adapter_core::AdapterType;
 use dbt_schemas::dbt_types::RelationType;
 use minijinja::Value;
 
-use crate::macro_test_harness::{MacroTestHarness, executed_sql};
+use crate::macro_test_harness::{MacroTestHarness, default_mock_config, executed_sql};
 
 fn harness() -> MacroTestHarness {
     MacroTestHarness::for_adapter(AdapterType::MotherDuck)
@@ -13,6 +13,36 @@ fn harness() -> MacroTestHarness {
         .with_stub_functions()
         .build()
         .expect("MotherDuck macro harness should build")
+}
+
+#[test]
+fn root_level_partition_by_is_a_config_error() {
+    let harness = harness();
+    let config = default_mock_config();
+    config.on("get", |args| {
+        let key = args.first().and_then(Value::as_str);
+        let default = args.get(1).cloned().unwrap_or(Value::UNDEFINED);
+        Ok(match key {
+            Some("partition_by") => Value::from_serialize(BTreeMap::from([
+                ("field", Value::from("event_date")),
+                ("data_type", Value::from("timestamp")),
+                ("granularity", Value::from("day")),
+            ])),
+            Some("contract") => {
+                Value::from_serialize(BTreeMap::from([("enforced", Value::from(false))]))
+            }
+            _ => default,
+        })
+    });
+    let ctx = harness
+        .materialization_context("orders", "select 1 as id")
+        .relation_type(RelationType::Table)
+        .config(Value::from_dyn_object(config))
+        .build();
+    let err = harness
+        .render("{{ motherduck__get_partitioned_by(this, false) }}", ctx)
+        .expect_err("root-level partition_by must fail");
+    assert!(err.to_string().contains("root-level partition_by"), "{err}");
 }
 
 #[test]
