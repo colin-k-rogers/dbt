@@ -27,7 +27,9 @@ pub const STATIC_ANALYSIS_SUPPORTED_ADAPTERS: &[AdapterType] = &[
 /// Adapters that support concurrent execution of microbatch models.
 ///
 /// This mirrors dbt-core's adapter capability for `Capability.MicrobatchConcurrency`.
-pub const MICROBATCH_SUPPORTED_ADAPTERS: &[AdapterType] = &[AdapterType::Snowflake];
+/// DuckLake write conflicts are still possible on the MotherDuck adapter.
+pub const MICROBATCH_SUPPORTED_ADAPTERS: &[AdapterType] =
+    &[AdapterType::Snowflake, AdapterType::MotherDuck];
 
 /// The type of the adapter.
 ///

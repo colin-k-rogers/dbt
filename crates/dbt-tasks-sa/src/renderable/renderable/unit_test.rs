@@ -1128,7 +1128,9 @@ fn infer_unit_test_expected_schema(
     // rendered for the default's dialect.
     // ClickHouse: the probe's session-scoped TEMPORARY table is invisible to
     // introspection (never in system.columns), so infer via the query schema.
+    // MotherDuck has no temporary tables; get_column_schema_from_query runs DESCRIBE.
     let materialization = if unit_test.node_adapter() == AdapterType::DuckDB
+        || unit_test.node_adapter() == AdapterType::MotherDuck
         || unit_test.node_adapter() == AdapterType::ClickHouse
         || options.use_query_schema_fallback
     {

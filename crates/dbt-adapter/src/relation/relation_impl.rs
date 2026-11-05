@@ -258,7 +258,7 @@ pub struct Relation {
     pub refreshable_append: bool,
     /// The location/region for this relation (BigQuery only, e.g., "US", "EU").
     pub location: Option<String>,
-    /// DuckDB external source location, rendered in place of schema/table.
+    /// DuckDB and MotherDuck external source location, rendered in place of schema/table.
     pub external: Option<String>,
     /// The table format of the relation
     pub table_format: TableFormat,
@@ -1262,8 +1262,10 @@ impl BaseRelation for Relation {
     }
 
     fn render_self_as_str(&self) -> String {
-        if self.adapter_type == AdapterType::DuckDB
-            && let Some(external) = &self.external
+        if matches!(
+            self.adapter_type,
+            AdapterType::DuckDB | AdapterType::MotherDuck
+        ) && let Some(external) = &self.external
         {
             return external.clone();
         }
@@ -2254,16 +2256,22 @@ mod tests {
         use super::*;
         #[test]
         fn test_external_relation_renders_location() {
-            let relation = Relation::new(
-                AdapterType::DuckDB,
-                "main".to_string(),
-                "raw".to_string(),
-                "orders".to_string(),
-            )
-            .with_quoting(DEFAULT_RESOLVED_QUOTING)
-            .with_external("'data/RawOrders.csv'");
+            for adapter_type in [AdapterType::DuckDB, AdapterType::MotherDuck] {
+                let relation = Relation::new(
+                    adapter_type,
+                    "main".to_string(),
+                    "raw".to_string(),
+                    "orders".to_string(),
+                )
+                .with_quoting(DEFAULT_RESOLVED_QUOTING)
+                .with_external("'data/RawOrders.csv'");
 
-            assert_eq!(relation.render_self_as_str(), "'data/RawOrders.csv'");
+                assert_eq!(
+                    relation.render_self_as_str(),
+                    "'data/RawOrders.csv'",
+                    "{adapter_type:?}"
+                );
+            }
         }
 
         fn path_from_db(db: Option<&str>) -> RelationPath {
