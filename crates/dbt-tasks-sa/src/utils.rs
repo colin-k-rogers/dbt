@@ -585,6 +585,25 @@ pub fn get_catalog_schemas_and_ids_by_adapter(
     groups
 }
 
+/// MotherDuck incremental and snapshot models stage into `dbt_temp`. Creating
+/// that schema from each model races, so register it once with the node schemas.
+pub fn include_motherduck_temp_schema(
+    adapter_type: AdapterType,
+    catalog_schemas: &mut BTreeMap<String, BTreeMap<String, String>>,
+) {
+    if adapter_type != AdapterType::MotherDuck {
+        return;
+    }
+    for (catalog, schemas) in catalog_schemas.iter_mut() {
+        if catalog.is_empty() {
+            continue;
+        }
+        schemas
+            .entry("dbt_temp".to_owned())
+            .or_insert_with(|| "motherduck.dbt_temp".to_owned());
+    }
+}
+
 /// Filters schemas by ones that don't already exist.
 pub fn filter_missing_schemas(
     adapter: &Arc<Adapter>,
@@ -879,5 +898,47 @@ mod catalog_schema_group_tests {
                 ),
             ]
         );
+    }
+}
+
+#[cfg(test)]
+mod motherduck_temp_schema_tests {
+    use super::include_motherduck_temp_schema;
+    use dbt_adapter_core::AdapterType;
+    use std::collections::BTreeMap;
+
+    #[test]
+    fn motherduck_adds_dbt_temp_once_per_database() {
+        let mut catalogs = BTreeMap::from([(
+            "analytics".to_owned(),
+            BTreeMap::from([("main".to_owned(), "model.proj.orders".to_owned())]),
+        )]);
+        include_motherduck_temp_schema(AdapterType::MotherDuck, &mut catalogs);
+        assert_eq!(catalogs["analytics"]["dbt_temp"], "motherduck.dbt_temp");
+        assert_eq!(catalogs["analytics"]["main"], "model.proj.orders");
+
+        catalogs
+            .get_mut("analytics")
+            .unwrap()
+            .insert("dbt_temp".to_owned(), "model.proj.keep".to_owned());
+        include_motherduck_temp_schema(AdapterType::MotherDuck, &mut catalogs);
+        assert_eq!(catalogs["analytics"]["dbt_temp"], "model.proj.keep");
+    }
+
+    #[test]
+    fn other_adapters_and_empty_catalogs_are_left_alone() {
+        let mut catalogs = BTreeMap::from([(
+            "analytics".to_owned(),
+            BTreeMap::from([("main".to_owned(), "model.proj.orders".to_owned())]),
+        )]);
+        include_motherduck_temp_schema(AdapterType::Snowflake, &mut catalogs);
+        assert!(!catalogs["analytics"].contains_key("dbt_temp"));
+
+        let mut catalogs = BTreeMap::from([(
+            String::new(),
+            BTreeMap::from([("main".to_owned(), "model.proj.orders".to_owned())]),
+        )]);
+        include_motherduck_temp_schema(AdapterType::MotherDuck, &mut catalogs);
+        assert!(!catalogs[""].contains_key("dbt_temp"));
     }
 }

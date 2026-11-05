@@ -1,0 +1,7 @@
+kind: Fixes
+body: Give MotherDuck staging tables a per-run name and create dbt_temp once.
+time: 2026-11-05T14:11:52.828948-08:00
+custom:
+    author: colin-k-rogers
+    issue: "16817"
+    project: dbt-core
