@@ -1,7 +1,7 @@
 {# Adapted from dbt-duckdb commit acdab5dfc85715572bbf43fcf2b318a5ed1bfa16,
    dbt/include/duckdb/macros/materializations/incremental.sql.
-   MotherDuck uses regular tables in a staging schema, with post-commit cleanup
-   and a post-model hook for failures. #}
+   MotherDuck uses regular tables in a staging schema. Success drops them after
+   commit; a failed materialization drops the same relation. #}
 {% materialization incremental, adapter='motherduck' %}
   {% set existing_relation = load_cached_relation(this) %}
   {% set target_relation = this.incorporate(type='table') %}
@@ -39,6 +39,7 @@
   {% elif full_refresh_mode %}
     {% set build_sql = create_table_as(false, intermediate_relation, sql, partitioned_by=partitioned_by, sorted_by=sorted_by) %}
   {% else %}
+    {# shortcut: setup pre-creates dbt_temp only; a custom meta.temp_schema_name can still race on first create #}
     {% do run_query(create_schema(temp_relation)) %}
     {% do run_query(get_create_table_as_sql(false, temp_relation, sql)) %}
     {% do to_drop.append(temp_relation) %}
