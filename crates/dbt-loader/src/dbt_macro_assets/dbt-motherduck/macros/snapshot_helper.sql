@@ -5,6 +5,7 @@
 
     {%- set columns = config.get("snapshot_table_column_names") or get_snapshot_table_column_names() -%}
 
+    {% set dml %}
     update {{ target }} as DBT_INTERNAL_TARGET
     set {{ columns.dbt_valid_to }} = DBT_INTERNAL_SOURCE.{{ columns.dbt_valid_to }}
     from {{ source }} as DBT_INTERNAL_SOURCE
@@ -22,7 +23,9 @@
     {%- endfor %}
     from {{ source }} as DBT_INTERNAL_SOURCE
     where DBT_INTERNAL_SOURCE.dbt_change_type::text = 'insert'::text;
+    {% endset %}
 
+    {{ return(motherduck_dml_explicit_transaction(dml)) }}
 {% endmacro %}
 
 {% macro build_snapshot_staging_table(strategy, sql, target_relation) %}
@@ -32,6 +35,7 @@
 
     {% set select = snapshot_staging_table(strategy, sql, target_relation) %}
 
+    {# shortcut: setup pre-creates dbt_temp only; a custom meta.temp_schema_name can still race on first create #}
     {% do run_query(create_schema(temp_relation)) %}
     {% call statement('build_snapshot_staging_relation') %}
         {{ create_table_as(temporary, temp_relation, select) }}
