@@ -4,8 +4,8 @@ use crate::schemas::relations::DEFAULT_DATABRICKS_DATABASE;
 use crate::schemas::serde::{DuckDbExtension, QueryTag, StringOrInteger, StringOrMap};
 
 use dbt_adapter_core::AdapterType;
-use dbt_common::ErrorCode;
 use dbt_common::tracing::dbt_emit::emit_warn_log_message;
+use dbt_common::ErrorCode;
 use dbt_yaml::DbtSchema;
 use dbt_yaml::UntaggedEnumDeserialize;
 use merge::Merge;
@@ -239,6 +239,8 @@ impl DbConfig {
             ],
             // `token` is deliberately absent: dbt debug prints these values.
             // `user` is absent because a MotherDuck profile has no username.
+            // `settings` matches DuckDB: the profile map is a connection key, so
+            // `to_connection_mapping` keeps it. `token` stays off this list.
             AdapterType::MotherDuck => &[
                 "host",
                 "port",
@@ -249,6 +251,7 @@ impl DbConfig {
                 "region",
                 "session_name",
                 "attach_mode",
+                "settings",
             ],
             AdapterType::Bigquery => &[
                 "method",
@@ -1918,6 +1921,9 @@ pub struct PostgresTargetEnv {
     pub host: String,
     pub user: String,
     pub port: StringOrInteger,
+    /// MotherDuck profile `settings`. Postgres leaves this unset.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub settings: Option<HashMap<String, YmlValue>>,
     pub __common__: CommonTargetContext,
 }
 
@@ -2266,6 +2272,21 @@ impl MotherDuckDbConfig {
     }
 }
 
+/// Profile `settings` for the Jinja target. Drops nested credentials the same
+/// way `to_connection_mapping` does, so a token inside the map is not rendered.
+fn exposed_profile_settings(
+    settings: Option<HashMap<String, YmlValue>>,
+) -> Result<Option<HashMap<String, YmlValue>>, String> {
+    let Some(settings) = settings else {
+        return Ok(None);
+    };
+    let mut value = dbt_yaml::to_value(&settings).map_err(|err| err.to_string())?;
+    DbConfig::redact_nested_credentials(&mut value);
+    dbt_yaml::from_value(value)
+        .map(Some)
+        .map_err(|err| err.to_string())
+}
+
 // This target context is only to be used in rendering yml's
 // See: https://docs.getdbt.com/reference/dbt-jinja-functions/target
 impl TryFrom<DbConfig> for TargetContext {
@@ -2364,6 +2385,7 @@ impl TryFrom<DbConfig> for TargetContext {
                     host: config.host.ok_or_else(|| missing("host"))?,
                     user: config.user.ok_or_else(|| missing("user"))?,
                     port: config.port.ok_or_else(|| missing("port"))?,
+                    settings: None,
                     __common__: CommonTargetContext {
                         database,
                         schema: config.schema.ok_or_else(|| missing("schema"))?,
@@ -2383,6 +2405,8 @@ impl TryFrom<DbConfig> for TargetContext {
                     // shape still requires the field.
                     user: String::new(),
                     port: config.port.ok_or_else(|| missing("port"))?,
+                    // Jinja `target` is this struct, not the connection-key list.
+                    settings: exposed_profile_settings(config.settings)?,
                     __common__: CommonTargetContext {
                         database,
                         schema: config.schema.ok_or_else(|| missing("schema"))?,
@@ -2649,12 +2673,10 @@ mod tests {
 
         // The adapter's retired external name is not a tag this enum accepts
         // either, same as any other unrecognized `type:`.
-        assert!(
-            dbt_yaml::from_str::<DbConfig>(
-                "type: lake_compute\nbase_url: https://example.invalid\n"
-            )
-            .is_err(),
-        );
+        assert!(dbt_yaml::from_str::<DbConfig>(
+            "type: lake_compute\nbase_url: https://example.invalid\n"
+        )
+        .is_err(),);
     }
 
     #[test]
@@ -3168,6 +3190,63 @@ schema: main
         assert_eq!(target.dbname, "analytics");
         assert_eq!(target.user, "");
         assert_eq!(target.port, StringOrInteger::Integer(5432));
+        assert!(target.settings.is_none());
+    }
+
+    #[test]
+    fn motherduck_settings_reach_the_target_and_connection_mapping() {
+        let config: DbConfig = dbt_yaml::from_str(
+            r#"
+type: motherduck
+host: pg.us-east-1-aws.motherduck.com
+token: super-secret
+database: analytics
+schema: main
+settings:
+  memory_limit: 4GB
+  motherduck_token: nested-secret
+"#,
+        )
+        .unwrap();
+
+        let connection = config.to_connection_mapping().unwrap();
+        let rendered = dbt_yaml::to_string(&connection).unwrap();
+        assert!(!rendered.contains("super-secret"), "{rendered}");
+        assert!(!rendered.contains("nested-secret"), "{rendered}");
+        let settings = connection
+            .get(dbt_yaml::Value::from("settings"))
+            .and_then(dbt_yaml::Value::as_mapping)
+            .expect("connection mapping should include settings");
+        assert_eq!(
+            settings
+                .get(dbt_yaml::Value::from("memory_limit"))
+                .and_then(dbt_yaml::Value::as_str),
+            Some("4GB")
+        );
+
+        let target = TargetContext::try_from(config).expect("MotherDuck target context");
+        let target = dbt_yaml::to_value(&target).expect("target should serialize");
+        let target = target.as_mapping().expect("target should be a mapping");
+        assert_eq!(
+            target
+                .get(dbt_yaml::Value::from("type"))
+                .and_then(dbt_yaml::Value::as_str),
+            Some("motherduck")
+        );
+        let settings = target
+            .get(dbt_yaml::Value::from("settings"))
+            .and_then(dbt_yaml::Value::as_mapping)
+            .expect("Jinja target.settings should be the profile map");
+        assert_eq!(
+            settings
+                .get(dbt_yaml::Value::from("memory_limit"))
+                .and_then(dbt_yaml::Value::as_str),
+            Some("4GB")
+        );
+        assert!(
+            !settings.contains_key(dbt_yaml::Value::from("motherduck_token")),
+            "nested credential leaked into target.settings"
+        );
     }
 
     #[test]
