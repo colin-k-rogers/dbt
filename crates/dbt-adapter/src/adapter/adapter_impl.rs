@@ -811,15 +811,20 @@ impl AdapterImpl {
         let splitter = engine.splitter();
         let adapter_type = self.adapter_type();
         let all_stmts = match adapter_type {
-            // BigQuery, embedded DuckDB, and lake compute support multi-statement execution.
+            // BigQuery, embedded DuckDB, lake compute, and MotherDuck run a script
+            // as one call.
             //
             // BigQuery: https://cloud.google.com/bigquery/docs/reference/standard-sql/procedural-language
             //
             // DuckDB: temp tables are connection-scoped; batching CREATE TEMP + DML in one
             // execute() call avoids the need for cross-call connection caching.
             //
-            // Lake compute: also supports batching
-            Bigquery | DuckDB | LakeCompute => vec![sql],
+            // Lake compute: also supports batching.
+            //
+            // MotherDuck: the driver splits a script in ExecuteScript when no rows are
+            // requested, and that splitter understands dollar quotes. A fetched query
+            // is prepared as one statement.
+            Bigquery | DuckDB | LakeCompute | MotherDuck => vec![sql],
             _ => splitter.split(sql, adapter_type),
         };
         // Filter out empty and comment-only statements.
