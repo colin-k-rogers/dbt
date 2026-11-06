@@ -283,6 +283,7 @@ pub fn escape_string_literal(s: &str, backend: AdapterType) -> String {
         | AdapterType::ClickHouse => s.replace('\\', "\\\\").replace('\'', "\\'"),
         AdapterType::Salesforce
         | AdapterType::DuckDB
+        | AdapterType::MotherDuck
         | AdapterType::Fabric
         | AdapterType::Exasol
         | AdapterType::Athena
