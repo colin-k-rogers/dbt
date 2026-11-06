@@ -1,0 +1,7 @@
+kind: Fixes
+body: Escape MotherDuck string literals the same way as DuckDB.
+time: 2026-11-06T14:24:57.688276-08:00
+custom:
+    author: colin-k-rogers
+    issue: "16817"
+    project: dbt-core
