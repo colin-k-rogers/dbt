@@ -1495,9 +1495,17 @@ fn reject_unsupported_databricks_hive_model_fields(model: &Value) -> AdapterResu
 pub(crate) fn motherduck_attach_names(
     catalog: &CatalogSpecView<'_>,
 ) -> AdapterResult<(String, String)> {
-    let motherduck = require_platform_block(catalog, catalog.name, "motherduck")?;
-    let database = get_yaml_str(motherduck, "database").unwrap_or(catalog.name);
-    let alias = get_yaml_str(motherduck, FIELD_CATALOG_DATABASE).unwrap_or(database);
+    let (database, alias) = catalog.motherduck_configured_names().ok_or_else(|| {
+        AdapterError::new(
+            AdapterErrorKind::Configuration,
+            format!(
+                "Catalog '{}' has no configuration for 'motherduck'",
+                catalog.name
+            ),
+        )
+    })?;
+    let database = database.unwrap_or(catalog.name);
+    let alias = alias.unwrap_or(database);
     Ok((database.to_string(), alias.to_string()))
 }
 
