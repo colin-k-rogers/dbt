@@ -1153,6 +1153,20 @@ impl<'a> CatalogSpecView<'a> {
             .and_then(|v| v.as_mapping())
     }
 
+    /// (`database`, `catalog_database`) from the motherduck block. Empty values
+    /// are absent. Neither field defaults to the catalog name.
+    pub fn motherduck_configured_names(&self) -> Option<(Option<&'a str>, Option<&'a str>)> {
+        let block = self.config_block("motherduck")?;
+        let field = |key: &str| {
+            block
+                .get(yml::Value::from(key))
+                .and_then(|value| value.as_str())
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+        };
+        Some((field("database"), field("catalog_database")))
+    }
+
     /// Whether the `lakecompute` adapter can read tables in this catalog: its
     /// type is one lakecompute reads, configured for a platform it reads through.
     pub fn lake_compute_can_read(&self) -> bool {
