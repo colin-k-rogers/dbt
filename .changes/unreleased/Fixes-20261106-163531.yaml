@@ -1,0 +1,7 @@
+kind: Fixes
+body: Keep MotherDuck metadata SQL in the MotherDuck module.
+time: 2026-11-06T16:35:31.178725-08:00
+custom:
+    author: colin-k-rogers
+    issue: "16817"
+    project: dbt-core

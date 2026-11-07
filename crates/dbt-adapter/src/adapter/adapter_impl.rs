@@ -3934,7 +3934,7 @@ impl AdapterImpl {
                 let describe_sql = metadata::motherduck::describe_query_sql(sql);
                 let batch =
                     engine.execute(Some(state), conn.as_mut(), ctx, &describe_sql, token)?;
-                metadata::duckdb::columns_from_duckdb_describe(MotherDuck, &batch)
+                metadata::motherduck::columns_from_describe(&batch)
                     .map(|columns| columns.into_iter().map(Arc::new).collect())
             }
             Impl(_, engine) => {

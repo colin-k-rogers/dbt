@@ -1,6 +1,5 @@
 use crate::AdapterEngine;
 use crate::adapter::adapter_impl::AdapterImpl;
-use crate::column::Column;
 use crate::connection::{AdapterConnectionFactory, ConnectionGuard};
 use crate::load_catalogs;
 use crate::relation::do_create_relation;
@@ -314,19 +313,17 @@ fn catalog_column_indices(
     adapter_type: AdapterType,
     batch: &RecordBatch,
 ) -> AdapterResult<Vec<i128>> {
+    fn as_i128<T: Copy + Into<i128>>(values: &[T]) -> Vec<i128> {
+        values.iter().copied().map(Into::into).collect()
+    }
+
     match adapter_type {
-        AdapterType::MotherDuck => Ok(batch
-            .column_values::<Int64Array>("column_index")?
-            .values()
-            .iter()
-            .map(|value| i128::from(*value))
-            .collect()),
-        _ => Ok(batch
-            .column_values::<Int32Array>("column_index")?
-            .values()
-            .iter()
-            .map(|value| i128::from(*value))
-            .collect()),
+        AdapterType::MotherDuck => {
+            Ok(as_i128(batch.column_values::<Int64Array>("column_index")?.values()))
+        }
+        _ => Ok(as_i128(
+            batch.column_values::<Int32Array>("column_index")?.values(),
+        )),
     }
 }
 
@@ -349,6 +346,17 @@ fn list_relations_sql(
         db_schema.resolved_schema.to_lowercase()
     };
 
+    match adapter_type {
+        AdapterType::MotherDuck => {
+            return crate::metadata::motherduck::list_relations_sql(
+                quoting,
+                &db_schema.resolved_catalog,
+                &query_schema,
+            );
+        }
+        _ => {}
+    }
+
     let catalog_predicate = if db_schema.resolved_catalog.is_empty() {
         String::new()
     } else {
@@ -363,38 +371,6 @@ fn list_relations_sql(
             ),
         )
     };
-
-    match adapter_type {
-        AdapterType::MotherDuck => {
-            let schema = dbt_adapter_sql::ident::escape_string_literal(
-                &query_schema,
-                AdapterType::MotherDuck,
-            );
-            let catalog = dbt_adapter_sql::ident::escape_string_literal(
-                &db_schema.resolved_catalog,
-                AdapterType::MotherDuck,
-            );
-            let schema_filter = if quoting.schema {
-                format!("schema_name = '{schema}'")
-            } else {
-                format!("lower(schema_name) = lower('{schema}')")
-            };
-            let catalog_filter = if catalog.is_empty() {
-                String::new()
-            } else {
-                format!(" AND lower(database_name) = lower('{catalog}')")
-            };
-            return format!(
-                "SELECT database_name AS table_catalog, schema_name AS table_schema, \
-                 table_name, 'BASE TABLE' AS table_type FROM duckdb_tables() \
-                 WHERE {schema_filter}{catalog_filter} UNION ALL \
-                 SELECT database_name AS table_catalog, schema_name AS table_schema, \
-                 view_name AS table_name, 'VIEW' AS table_type FROM duckdb_views() \
-                 WHERE {schema_filter}{catalog_filter}",
-            );
-        }
-        _ => {}
-    }
 
     format!(
         "SELECT table_catalog, table_schema, table_name, table_type \
@@ -471,27 +447,6 @@ pub fn list_relations(
     }
 
     Ok(relations)
-}
-
-pub(crate) fn columns_from_duckdb_describe(
-    adapter_type: AdapterType,
-    describe_result: &RecordBatch,
-) -> AdapterResult<Vec<Column>> {
-    let column_names = describe_result.column_values::<StringArray>("column_name")?;
-    let data_types = describe_result.column_values::<StringArray>("column_type")?;
-
-    Ok((0..describe_result.num_rows())
-        .map(|i| {
-            Column::new(
-                adapter_type,
-                column_names.value(i).to_string(),
-                data_types.value(i).to_string(),
-                None,
-                None,
-                None,
-            )
-        })
-        .collect())
 }
 
 pub(crate) fn duckdb_catalog_attached_database(catalog: &CatalogSpecView<'_>) -> Option<String> {
@@ -986,7 +941,7 @@ mod tests {
             ],
         )
         .unwrap();
-        let columns = columns_from_duckdb_describe(AdapterType::MotherDuck, &batch).unwrap();
+        let columns = super::motherduck::columns_from_describe(&batch).unwrap();
         assert_eq!(columns[0].name(), "id");
         assert_eq!(columns[0].dtype(), "BIGINT");
         assert_eq!(columns[1].name(), "payload");
