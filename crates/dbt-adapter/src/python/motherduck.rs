@@ -133,7 +133,10 @@ pub fn submit_python_job(
     let options = flight_options(adapter);
     let name = flight_name(state, model)?;
     let spec = FlightSpec {
-        source: build_source(compiled_code, &settings_statements(adapter))?,
+        source: build_source(
+            compiled_code,
+            &crate::engine::settings_sql(adapter.engine().get_config())?,
+        )?,
         requirements: build_requirements(model, &options)?,
         instance_type: instance_type(model, &options),
         access_token_name: options.access_token_name.clone(),
@@ -184,29 +187,13 @@ fn execute_flight_sql(
 }
 
 fn flight_name(state: &State, model: &Value) -> AdapterResult<String> {
-    let from_macro = execute_macro_with_package(
+    let rendered = execute_macro_with_package(
         state,
         &[model.clone()],
         "motherduck__flight_name",
         "dbt_motherduck",
-    )
-    .ok()
-    .and_then(|value| value.as_str().map(str::to_string))
-    .filter(|name| !name.trim().is_empty());
-    sanitize_flight_name(&from_macro.unwrap_or_else(|| default_flight_name(model)))
-}
-
-fn default_flight_name(model: &Value) -> String {
-    let mut parts = vec!["dbt".to_string()];
-    for key in ["package_name", "database", "schema"] {
-        if let Some(part) = attr_string(model, key) {
-            parts.push(part);
-        }
-    }
-    if let Some(identifier) = attr_string(model, "alias").or_else(|| attr_string(model, "name")) {
-        parts.push(identifier);
-    }
-    parts.join("-")
+    )?;
+    sanitize_flight_name(rendered.as_str().unwrap_or("").trim())
 }
 
 fn sanitize_flight_name(name: &str) -> AdapterResult<String> {
@@ -225,27 +212,6 @@ fn sanitize_flight_name(name: &str) -> AdapterResult<String> {
         )));
     }
     Ok(name.to_string())
-}
-
-fn settings_statements(adapter: &AdapterImpl) -> Vec<String> {
-    let Some(value) = adapter.engine().get_config().get("settings") else {
-        return Vec::new();
-    };
-    let Some(mapping) = value.as_mapping() else {
-        return Vec::new();
-    };
-    mapping
-        .iter()
-        .filter_map(|(key, value)| {
-            let key = key.as_str()?;
-            let value = yaml_scalar(value)?;
-            Some(format!(
-                "SET {} = '{}'",
-                dbt_adapter_sql::ident::quote_identifier(key, AdapterType::MotherDuck),
-                escape_sql(&value)
-            ))
-        })
-        .collect()
 }
 
 fn build_source(compiled_code: &str, settings: &[String]) -> AdapterResult<String> {
@@ -314,21 +280,14 @@ fn instance_type(model: &Value, options: &FlightOptions) -> Option<String> {
 
 impl FlightSpec {
     fn sql_args(&self) -> String {
-        let mut args = format!(
-            "source_code := '{}', requirements_txt := '{}'",
-            escape_sql(&self.source),
-            escape_sql(&self.requirements)
-        );
-        if let Some(token) = &self.access_token_name {
-            args.push_str(&format!(", access_token_name := '{}'", escape_sql(token)));
-        }
-        if let Some(seconds) = self.max_runtime_sec {
-            args.push_str(&format!(", max_runtime_sec := {seconds}"));
-        }
-        if let Some(instance) = &self.instance_type {
-            args.push_str(&format!(", instance_type := '{}'", escape_sql(instance)));
-        }
-        args
+        self.version_fields()
+            .into_iter()
+            .map(|(column, expected)| match expected {
+                Expected::Text(text) => format!("{column} := '{}'", escape_sql(&text)),
+                Expected::Int(number) => format!("{column} := {number}"),
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
     }
 
     fn version_fields(&self) -> Vec<(&'static str, Expected)> {

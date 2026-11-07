@@ -12,7 +12,7 @@ fn config_error(message: impl Into<String>) -> AdapterError {
     AdapterError::new(AdapterErrorKind::Configuration, message)
 }
 
-fn settings_sql(config: &AdapterConfig) -> AdapterResult<Vec<String>> {
+pub(crate) fn settings_sql(config: &AdapterConfig) -> AdapterResult<Vec<String>> {
     let Some(value) = config.get("settings") else {
         return Ok(Vec::new());
     };

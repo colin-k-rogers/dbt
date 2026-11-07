@@ -1,0 +1,7 @@
+kind: Fixes
+body: Use the shared MotherDuck settings SQL and flight name for Python models.
+time: 2026-11-06T16:40:02.930248-08:00
+custom:
+    author: colin-k-rogers
+    issue: "16817"
+    project: dbt-core
