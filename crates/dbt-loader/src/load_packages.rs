@@ -4,6 +4,7 @@ use dbt_common::path::DbtPath;
 use dbt_common::tracing::dbt_emit::emit_warn_log_message;
 use dbt_jinja_utils::jinja_environment::JinjaEnv;
 use indexmap::IndexMap;
+use minijinja::dispatch_object::get_parent_adapter;
 use sha2::{Digest, Sha256};
 use walkdir::WalkDir;
 
@@ -317,11 +318,8 @@ async fn collect_packages(
 pub fn internal_package_names(adapter_type: AdapterType) -> Vec<String> {
     let adapter_package = format!("dbt-{adapter_type}");
     let mut packages = vec!["dbt-adapters".to_string(), adapter_package];
-    match adapter_type {
-        AdapterType::Redshift => packages.push("dbt-postgres".to_string()),
-        AdapterType::Databricks => packages.push("dbt-spark".to_string()),
-        AdapterType::LakeCompute => packages.push("dbt-duckdb".to_string()),
-        _ => {}
+    if let Some(parent) = get_parent_adapter(adapter_type.as_ref()) {
+        packages.push(format!("dbt-{parent}"));
     }
     packages
 }
@@ -569,6 +567,14 @@ fn fill_default(paths: &mut Option<Vec<String>>, defaults: &[&str]) {
 #[cfg(test)]
 mod internal_package_union_tests {
     use super::*;
+
+    #[test]
+    fn motherduck_loads_only_its_own_package() {
+        assert_eq!(
+            internal_package_names(AdapterType::MotherDuck),
+            ["dbt-adapters", "dbt-motherduck"]
+        );
+    }
 
     /// The union is over each adapter's *transitive closure*, so lake compute
     /// drags in `dbt-duckdb` via the inheritance table just as it does on its own.
