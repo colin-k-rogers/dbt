@@ -1205,10 +1205,9 @@ impl SqlType {
             DataType::Timestamp(TimeUnit::Second, tz) => SqlType::Timestamp {
                 // `None` is the backend's default precision, microseconds on DuckDB, so
                 // seconds are spelled `Some(0)` there.
-                precision: if matches!(backend, AdapterType::DuckDB | AdapterType::MotherDuck) {
-                    Some(0)
-                } else {
-                    None
+                precision: match backend {
+                    AdapterType::DuckDB | AdapterType::MotherDuck => Some(0),
+                    _ => None,
                 },
                 time_zone_spec: if tz.is_some() {
                     TimeZoneSpec::With

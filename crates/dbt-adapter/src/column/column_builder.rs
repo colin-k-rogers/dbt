@@ -60,24 +60,8 @@ impl ColumnBuilder {
                 numeric_precision,
                 numeric_scale,
             ),
-            DuckDB => Column::new_boxed(
-                DuckDB,
-                name,
-                dtype,
-                char_size,
-                numeric_precision,
-                numeric_scale,
-            ),
-            MotherDuck => Column::new_boxed(
-                MotherDuck,
-                name,
-                dtype,
-                char_size,
-                numeric_precision,
-                numeric_scale,
-            ),
-            LakeCompute => Column::new_boxed(
-                LakeCompute,
+            DuckDB | MotherDuck | LakeCompute => Column::new_boxed(
+                self.adapter_type,
                 name,
                 dtype,
                 char_size,
