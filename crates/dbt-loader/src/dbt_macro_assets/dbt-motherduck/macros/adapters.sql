@@ -20,38 +20,33 @@
   {% if contract_config.enforced and not temporary %}
     {#-- DuckDB doesnt support constraints on temp tables --#}
     {{ get_table_columns_and_constraints() }} ;
-    {% if partitioned_by %}
-      {{ motherduck__alter_table_set_partitioned_by(relation, partitioned_by) }}
-    {% endif %}
-    {% if sorted_by %}
-      {{ motherduck__alter_table_set_sorted_by(relation, sorted_by) }}
-    {% endif %}
-    insert into {{ relation }} {{ get_column_names() }} (
-      {{ get_select_subquery(compiled_code) }}
-    );
-  {% else %}
-    {% if partitioned_by or sorted_by %}
+  {% elif partitioned_by or sorted_by %}
     as (
       select * from (
         {{ compiled_code }}
       ) as model_subq
       limit 0
     );
-    {% if partitioned_by %}
+  {% else %}
+    as (
+      {{ compiled_code }}
+    );
+  {% endif %}
+  {% if partitioned_by %}
     {{ motherduck__alter_table_set_partitioned_by(relation, partitioned_by) }}
-    {% endif %}
-    {% if sorted_by %}
+  {% endif %}
+  {% if sorted_by %}
     {{ motherduck__alter_table_set_sorted_by(relation, sorted_by) }}
-    {% endif %}
+  {% endif %}
+  {% if contract_config.enforced and not temporary %}
+    insert into {{ relation }} {{ get_column_names() }} (
+      {{ get_select_subquery(compiled_code) }}
+    );
+  {% elif partitioned_by or sorted_by %}
     insert into {{ relation }}
       select * from (
         {{ compiled_code }}
       ) as model_subq;
-    {% else %}
-    as (
-      {{ compiled_code }}
-    );
-    {% endif %}
   {% endif %}
   {%- elif language == 'python' -%}
     {{ exceptions.raise_compiler_error('Python models are not supported by dbt-motherduck') }}
@@ -210,26 +205,7 @@
   {%- endif -%}
 
   {%- set parts = normalize_string_or_list(raw, "partitioned_by/partition_by") -%}
-
-  {%- if parts | length == 0 -%}
-    {% do exceptions.raise_compiler_error("partitioned_by/partition_by must contain at least one column") %}
-  {%- endif -%}
-
-  {# Apply partitioning only on the final target relation, not staging/intermediate relations. #}
-  {%- if this is defined and config.get('materialized') in ['table', 'incremental']
-      and relation.identifier and this.identifier and relation.identifier != this.identifier -%}
-    {{ return(none) }}
-  {%- endif -%}
-
-  {%- if not adapter.is_ducklake(relation) -%}
-    {% do exceptions.warn(
-      "partitioned_by/partition_by is only supported for DuckLake relations; ignoring for "
-      ~ relation
-    ) %}
-    {{ return(none) }}
-  {%- endif -%}
-
-  {{ return(parts | join(', ')) }}
+  {{ return(motherduck__ducklake_column_list(relation, parts, "partitioned_by/partition_by")) }}
 {%- endmacro %}
 
 {% macro motherduck__alter_table_set_partitioned_by(relation, partitioned_by) -%}
@@ -250,31 +226,33 @@
   {%- endif -%}
 
   {%- set parts = normalize_string_or_list(raw, "sorted_by/sort_by") -%}
+  {{ return(motherduck__ducklake_column_list(relation, parts, "sorted_by/sort_by", true)) }}
+{%- endmacro %}
 
+{% macro motherduck__ducklake_column_list(relation, parts, label, quote_identifiers=false) -%}
   {%- if parts | length == 0 -%}
-    {% do exceptions.raise_compiler_error("sorted_by/sort_by must contain at least one column") %}
+    {% do exceptions.raise_compiler_error(label ~ " must contain at least one column") %}
   {%- endif -%}
 
-  {# Apply sorting only on the final target relation, not staging/intermediate relations. #}
+  {# Skip staging relations: only the final target identifier is laid out. #}
   {%- if this is defined and config.get('materialized') in ['table', 'incremental']
       and relation.identifier and this.identifier and relation.identifier != this.identifier -%}
     {{ return(none) }}
   {%- endif -%}
 
   {%- if not adapter.is_ducklake(relation) -%}
-    {% do exceptions.warn(
-      "sorted_by/sort_by is only supported for DuckLake relations; ignoring for "
-      ~ relation
-    ) %}
+    {% do exceptions.warn(label ~ " is only supported for DuckLake relations; ignoring for " ~ relation) %}
     {{ return(none) }}
   {%- endif -%}
 
-  {%- set quoted = [] -%}
-  {%- for col in parts -%}
-    {%- set escaped = col | replace('"', '""') -%}
-    {%- do quoted.append(adapter.quote(escaped)) -%}
-  {%- endfor -%}
-  {{ return(quoted | join(', ')) }}
+  {%- if quote_identifiers -%}
+    {%- set quoted = [] -%}
+    {%- for col in parts -%}
+      {%- do quoted.append(adapter.quote(col | replace('"', '""'))) -%}
+    {%- endfor -%}
+    {{ return(quoted | join(', ')) }}
+  {%- endif -%}
+  {{ return(parts | join(', ')) }}
 {%- endmacro %}
 
 {% macro motherduck__alter_table_set_sorted_by(relation, sorted_by) -%}

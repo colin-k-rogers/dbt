@@ -2,36 +2,30 @@
    dbt/include/duckdb/macros/catalog.sql. #}
 
 {% macro motherduck__get_catalog(information_schema, schemas) -%}
-  {% set query %}
-    with tables as (
-      {{ motherduck__get_catalog_tables_sql(information_schema) }}
-      {{ motherduck__get_catalog_schemas_where_clause_sql(schemas) }}
-    ),
-    columns as (
-      {{ motherduck__get_catalog_columns_sql(information_schema) }}
-      {{ motherduck__get_catalog_schemas_where_clause_sql(schemas) }}
-    )
-    {{ motherduck__get_catalog_results_sql() }}
-  {% endset %}
-
-  {{ return(run_query(query)) }}
+  {{ return(run_query(motherduck__catalog_query(
+    information_schema,
+    motherduck__get_catalog_schemas_where_clause_sql(schemas)
+  ))) }}
 {%- endmacro %}
 
 
 {% macro motherduck__get_catalog_relations(information_schema, relations) -%}
-  {% set query %}
+  {{ return(run_query(motherduck__catalog_query(
+    information_schema,
+    motherduck__get_catalog_relations_where_clause_sql(relations)
+  ))) }}
+{%- endmacro %}
+
+{% macro motherduck__catalog_query(information_schema, where_sql) -%}
     with tables as (
       {{ motherduck__get_catalog_tables_sql(information_schema) }}
-      {{ motherduck__get_catalog_relations_where_clause_sql(relations) }}
+      {{ where_sql }}
     ),
     columns as (
       {{ motherduck__get_catalog_columns_sql(information_schema) }}
-      {{ motherduck__get_catalog_relations_where_clause_sql(relations) }}
+      {{ where_sql }}
     )
     {{ motherduck__get_catalog_results_sql() }}
-  {% endset %}
-
-  {{ return(run_query(query)) }}
 {%- endmacro %}
 
 
