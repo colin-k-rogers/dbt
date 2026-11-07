@@ -28,8 +28,8 @@
   {% if batch_ctx and batch_ctx.get('event_time_start') %}
     {% set batch_id = batch_ctx.get('event_time_start') | string | replace('-', '') | replace(':', '') | replace(' ', '_') | replace('+', '_') %}
   {% endif %}
-  {# shortcut: temp schema is always dbt_temp, honor meta.temp_schema_name when the adapter path does #}
-  {% set temp_relation = target_relation.incorporate(path=adapter.get_temp_relation_path(target_relation, batch_id=batch_id)) %}
+  {% set staged = motherduck__dispatch_temporary_relation(target_relation, batch_id) %}
+  {% set temp_relation = staged.relation %}
   {% do adapter.commit() %}
   {{ run_hooks(pre_hooks, inside_transaction=False) }}
   {{ run_hooks(pre_hooks, inside_transaction=True) }}

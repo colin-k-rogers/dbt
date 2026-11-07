@@ -58,11 +58,7 @@
 
     {%- for when_matched in when_matched_clauses %}
     WHEN MATCHED
-        {%- if when_matched.get('condition') -%}
-            {%- if when_matched.get('condition') is string %} AND {{ when_matched.get('condition') }}
-            {%- else %} AND ({{ when_matched.get('condition') | join(') AND (') }})
-            {%- endif -%}
-        {%- endif %}
+        {{ motherduck__merge_and_condition(when_matched.get('condition')) }}
     THEN
         {% if when_matched.get('action') == 'update' %}
             {%- if when_matched.get('mode') == 'by_name' -%}
@@ -100,19 +96,14 @@
         {%- elif when_matched.get('action') == 'do_nothing' %}
             DO NOTHING
         {%- elif when_matched.get('action') == 'error' %}
-            {%- set error_message = (when_matched.get('error_message', '') or '') | replace("'", "''") -%}
-            ERROR{% if when_matched.get('error_message') %} '{{ error_message }}'{% endif %}
+            {{ motherduck__merge_error_action(when_matched) }}
         {%- endif %}
     {%- endfor %}
 
     {%- for when_not_matched in when_not_matched_clauses %}
     WHEN NOT MATCHED
         {% if when_not_matched.get('by') %}BY {{ when_not_matched.get('by') | upper }} {% endif %}
-        {%- if when_not_matched.get('condition') -%}
-            {%- if when_not_matched.get('condition') is string %} AND {{ when_not_matched.get('condition') }}
-            {%- else %} AND ({{ when_not_matched.get('condition') | join(') AND (') }})
-            {%- endif -%}
-        {%- endif %}
+        {{ motherduck__merge_and_condition(when_not_matched.get('condition')) }}
     THEN
         {% if when_not_matched.get('action') == 'update' %}
             {%- set set_expressions = when_not_matched.get('set_expressions', {}) -%}
@@ -142,8 +133,7 @@
         {%- elif when_not_matched.get('action') == 'do_nothing' %}
             DO NOTHING
         {%- elif when_not_matched.get('action') == 'error' %}
-            {%- set error_message = (when_not_matched.get('error_message', '') or '') | replace("'", "''") -%}
-            ERROR{% if when_not_matched.get('error_message') %} '{{ error_message }}'{% endif %}
+            {{ motherduck__merge_error_action(when_not_matched) }}
         {%- endif %}
     {%- endfor %}
 
@@ -179,4 +169,17 @@
     {% else %}
         ON ({{ (join_predicates + incremental_filters) | join(") AND (") }})
     {% endif %}
+{%- endmacro %}
+
+{% macro motherduck__merge_and_condition(condition) -%}
+    {%- if condition -%}
+        {%- if condition is string %} AND {{ condition }}
+        {%- else %} AND ({{ condition | join(') AND (') }})
+        {%- endif -%}
+    {%- endif -%}
+{%- endmacro %}
+
+{% macro motherduck__merge_error_action(clause) -%}
+    {%- set error_message = (clause.get('error_message', '') or '') | replace("'", "''") -%}
+    ERROR{% if clause.get('error_message') %} '{{ error_message }}'{% endif %}
 {%- endmacro %}
