@@ -352,8 +352,12 @@ catalogs:
         database: warehouse
 "#,
             |view| {
+                let statements = catalog_attach_sql(view).unwrap();
                 assert_eq!(
-                    catalog_attach_sql(view).unwrap(),
+                    statements
+                        .iter()
+                        .map(|statement| statement.sql.as_str())
+                        .collect::<Vec<_>>(),
                     vec![
                         r#"ATTACH IF NOT EXISTS 'md:dbt_md_lake' AS "hot_dog_lake""#,
                         r#"ATTACH IF NOT EXISTS 'md:warehouse' AS "warehouse""#,
