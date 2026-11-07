@@ -59,12 +59,14 @@ fn catalog_attach_sql(view: &DbtCatalogsView<'_>) -> AdapterResult<Vec<InitState
     let mut seen_aliases = HashMap::new();
     let mut statements = Vec::new();
 
-    for catalog in view
-        .catalogs
-        .iter()
-        .filter(|catalog| catalog.catalog_type == CatalogType::MotherDuck)
-    {
-        let (database, alias) = crate::catalog_relation::motherduck_attach_names(catalog)?;
+    for catalog in &view.catalogs {
+        let (database, alias) = match catalog.catalog_type {
+            CatalogType::MotherDuck => crate::catalog_relation::motherduck_attach_names(catalog)?,
+            CatalogType::DuckLake => {
+                crate::catalog_relation::motherduck_ducklake_attach_names(catalog)?
+            }
+            _ => continue,
+        };
         let collision_key = alias.to_lowercase();
         if let Some(prior) = seen_aliases.insert(collision_key, catalog.name) {
             return Err(config_error(format!(
@@ -327,6 +329,36 @@ catalogs:
                 assert!(err.message().contains("collides case-insensitively"));
                 assert!(err.message().contains("first"));
                 assert!(err.message().contains("second"));
+            },
+        );
+    }
+
+    #[test]
+    fn catalog_attach_sql_attaches_ducklake_account_databases() {
+        with_catalogs(
+            r#"
+catalogs:
+  - name: hot_dog_lake
+    type: ducklake
+    table_format: default
+    config:
+      duckdb:
+        metadata_path: dbt_md_lake
+  - name: analytics
+    type: motherduck
+    table_format: default
+    config:
+      motherduck:
+        database: warehouse
+"#,
+            |view| {
+                assert_eq!(
+                    catalog_attach_sql(view).unwrap(),
+                    vec![
+                        r#"ATTACH IF NOT EXISTS 'md:dbt_md_lake' AS "hot_dog_lake""#,
+                        r#"ATTACH IF NOT EXISTS 'md:warehouse' AS "warehouse""#,
+                    ]
+                );
             },
         );
     }
