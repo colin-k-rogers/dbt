@@ -591,16 +591,11 @@ pub fn include_motherduck_temp_schema(
     adapter_type: AdapterType,
     catalog_schemas: &mut BTreeMap<String, BTreeMap<String, String>>,
 ) {
-    if adapter_type != AdapterType::MotherDuck {
-        return;
-    }
-    for (catalog, schemas) in catalog_schemas.iter_mut() {
-        if catalog.is_empty() {
-            continue;
+    match adapter_type {
+        AdapterType::MotherDuck => {
+            dbt_adapter::adapter::motherduck::include_temp_schema(catalog_schemas);
         }
-        schemas
-            .entry("dbt_temp".to_owned())
-            .or_insert_with(|| "motherduck.dbt_temp".to_owned());
+        _ => {}
     }
 }
 
