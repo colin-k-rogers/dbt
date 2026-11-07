@@ -1015,6 +1015,36 @@ pub struct MotherDuckDbConfig {
     /// Passed to the driver as `adbc.motherduck.session_name`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session_name: Option<String>,
+    /// Options for Python models, which run as MotherDuck Flights.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[merge(strategy = merge_strategies_extend::overwrite_always)]
+    pub flights: Option<MotherDuckFlightConfig>,
+}
+
+/// Profile `flights:` block. Every field is optional. A model's `packages`
+/// and `instance_type` config override this block.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default, DbtSchema, Merge)]
+#[merge(strategy = merge_strategies_extend::overwrite_option)]
+#[serde(rename_all = "snake_case")]
+pub struct MotherDuckFlightConfig {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub access_token_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_runtime_sec: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timeout_sec: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub poll_interval_sec: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub log_lines: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub log_url_template: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub requirements: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub duckdb_version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub instance_type: Option<String>,
 }
 
 fn default_motherduck_method() -> Option<String> {
