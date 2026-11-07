@@ -1,8 +1,9 @@
 use std::sync::Arc;
 
-use arrow_array::RecordBatch;
+use arrow_array::{RecordBatch, StringArray};
 use dbt_adapter_core::AdapterType;
 use dbt_common::cancellation::CancellationToken;
+use dbt_adapter_engine::record_batch::RecordBatchExt;
 use dbt_schemas::schemas::common::{ResolvedQuoting, normalize_quote};
 use dbt_schemas::schemas::relations::base::BaseRelation;
 use minijinja::State;
@@ -32,12 +33,11 @@ fn execute_sql(
 pub(crate) fn list_schemas_sql(database: &str) -> String {
     // filter_missing_schemas passes a quoted catalog; duckdb_schemas() stores the raw name.
     let (database, _) = normalize_quote(false, AdapterType::MotherDuck, database);
-    let database =
-        dbt_adapter_sql::ident::escape_string_literal(&database, AdapterType::MotherDuck);
-    let filter = if database.is_empty() {
+    let predicate = database_eq(&database);
+    let filter = if predicate.is_empty() {
         String::new()
     } else {
-        format!(" WHERE lower(database_name) = lower('{database}')")
+        format!(" WHERE {predicate}")
     };
     format!("SELECT schema_name FROM duckdb_schemas(){filter}")
 }
@@ -56,9 +56,22 @@ pub(crate) fn relation_columns(
     state: &State,
     relation: &dyn BaseRelation,
 ) -> AdapterResult<Vec<Column>> {
-    let sql = format!("DESCRIBE {}", relation.render_self_as_str());
+    let sql = describe_query_sql(&relation.render_self_as_str());
     let batch = execute_sql(adapter, state, "get_columns_in_relation", &sql)?;
-    super::duckdb::columns_from_duckdb_describe(AdapterType::MotherDuck, &batch)
+    columns_from_describe(&batch)
+}
+
+pub(crate) fn list_relations_sql(quoting: ResolvedQuoting, catalog: &str, schema: &str) -> String {
+    let schema_filter = name_eq("schema_name", schema, quoting.schema);
+    let catalog_filter = database_and(catalog);
+    format!(
+        "SELECT database_name AS table_catalog, schema_name AS table_schema, \
+         table_name, 'BASE TABLE' AS table_type FROM duckdb_tables() \
+         WHERE {schema_filter}{catalog_filter} UNION ALL \
+         SELECT database_name AS table_catalog, schema_name AS table_schema, \
+         view_name AS table_name, 'VIEW' AS table_type FROM duckdb_views() \
+         WHERE {schema_filter}{catalog_filter}",
+    )
 }
 
 /// `schema` and `identifier` are already folded for unquoted names by the caller.
@@ -68,32 +81,10 @@ pub(crate) fn get_relation_sql(
     schema: &str,
     identifier: &str,
 ) -> String {
-    let literal =
-        |value: &str| dbt_adapter_sql::ident::escape_string_literal(value, AdapterType::MotherDuck);
-    let database = literal(database);
-    let schema = literal(schema);
-    let identifier = literal(identifier);
-    let schema_filter = if quoting.schema {
-        format!("schema_name = '{schema}'")
-    } else {
-        format!("lower(schema_name) = lower('{schema}')")
-    };
-    let identifier_filter = if quoting.identifier {
-        format!("table_name = '{identifier}'")
-    } else {
-        format!("lower(table_name) = lower('{identifier}')")
-    };
-    let view_identifier_filter = if quoting.identifier {
-        format!("view_name = '{identifier}'")
-    } else {
-        format!("lower(view_name) = lower('{identifier}')")
-    };
-    let database_filter = if database.is_empty() {
-        String::new()
-    } else {
-        format!(" AND lower(database_name) = lower('{database}')")
-    };
-
+    let schema_filter = name_eq("schema_name", schema, quoting.schema);
+    let identifier_filter = name_eq("table_name", identifier, quoting.identifier);
+    let view_identifier_filter = name_eq("view_name", identifier, quoting.identifier);
+    let database_filter = database_and(database);
     format!(
         "SELECT 'BASE TABLE' AS type FROM duckdb_tables() \
          WHERE {schema_filter} AND {identifier_filter}{database_filter} UNION ALL \
@@ -104,4 +95,50 @@ pub(crate) fn get_relation_sql(
 
 pub(crate) fn describe_query_sql(sql: &str) -> String {
     format!("DESCRIBE {}", sql.trim().trim_end_matches(';'))
+}
+
+pub(crate) fn columns_from_describe(describe_result: &RecordBatch) -> AdapterResult<Vec<Column>> {
+    let column_names = describe_result.column_values::<StringArray>("column_name")?;
+    let data_types = describe_result.column_values::<StringArray>("column_type")?;
+
+    Ok((0..describe_result.num_rows())
+        .map(|i| {
+            Column::new(
+                AdapterType::MotherDuck,
+                column_names.value(i).to_string(),
+                data_types.value(i).to_string(),
+                None,
+                None,
+                None,
+            )
+        })
+        .collect())
+}
+
+fn name_eq(column: &str, value: &str, quoted: bool) -> String {
+    let value = dbt_adapter_sql::ident::escape_string_literal(value, AdapterType::MotherDuck);
+    if quoted {
+        format!("{column} = '{value}'")
+    } else {
+        format!("lower({column}) = lower('{value}')")
+    }
+}
+
+fn database_eq(database: &str) -> String {
+    if database.is_empty() {
+        String::new()
+    } else {
+        let database =
+            dbt_adapter_sql::ident::escape_string_literal(database, AdapterType::MotherDuck);
+        format!("lower(database_name) = lower('{database}')")
+    }
+}
+
+fn database_and(database: &str) -> String {
+    let predicate = database_eq(database);
+    if predicate.is_empty() {
+        String::new()
+    } else {
+        format!(" AND {predicate}")
+    }
 }
