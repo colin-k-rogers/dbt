@@ -1,0 +1,7 @@
+kind: Under the Hood
+body: Declare MotherDuck as an adapter type with DuckDB behavior parity.
+time: 2026-10-21T17:24:43.585929-07:00
+custom:
+    author: colin-k-rogers
+    issue: "16817"
+    project: dbt-core

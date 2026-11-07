@@ -1128,10 +1128,12 @@ fn infer_unit_test_expected_schema(
     // rendered for the default's dialect.
     // ClickHouse: the probe's session-scoped TEMPORARY table is invisible to
     // introspection (never in system.columns), so infer via the query schema.
-    let materialization = if unit_test.node_adapter() == AdapterType::DuckDB
-        || unit_test.node_adapter() == AdapterType::ClickHouse
-        || options.use_query_schema_fallback
-    {
+    // MotherDuck has no temporary tables; get_column_schema_from_query runs DESCRIBE.
+    let use_query_schema = match unit_test.node_adapter() {
+        AdapterType::DuckDB | AdapterType::MotherDuck | AdapterType::ClickHouse => true,
+        _ => options.use_query_schema_fallback,
+    };
+    let materialization = if use_query_schema {
         r#"
   {% macro get_expected_columns(sql, select_sql_header) -%}
       {%- if select_sql_header is not none -%}
@@ -2604,7 +2606,7 @@ fn is_supported_type(adapter_type: AdapterType, ref_type: &DataType) -> bool {
                 DatabricksTyping::is_timestamp_ntz(ref_type)
                     || dbt_adapter::sql_types::databricks::is_complex_type(ref_type)
             }
-            AdapterType::DuckDB => {
+            AdapterType::DuckDB | AdapterType::MotherDuck => {
                 // DuckDB distinct types are wrapped as FixedSizeList(Field(name, ..), 1)
                 match ref_type {
                     DataType::FixedSizeList(_, 1) => true,

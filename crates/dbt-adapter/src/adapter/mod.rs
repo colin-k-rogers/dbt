@@ -703,6 +703,7 @@ impl Adapter {
                 | AdapterType::Spark
                 | AdapterType::Databricks
                 | AdapterType::DuckDB
+                | AdapterType::MotherDuck
                 | AdapterType::LakeCompute => {
                     format!("({expr1} IS NOT DISTINCT FROM {expr2})")
                 }
@@ -2546,6 +2547,7 @@ impl Adapter {
                     | AdapterType::Redshift
                     | AdapterType::Spark
                     | AdapterType::DuckDB
+                    | AdapterType::MotherDuck
                     | AdapterType::Postgres
                     | AdapterType::Salesforce
                     | AdapterType::Fabric
@@ -2576,6 +2578,7 @@ impl Adapter {
                 | AdapterType::Redshift
                 | AdapterType::Spark
                 | AdapterType::DuckDB
+                | AdapterType::MotherDuck
                 | AdapterType::Postgres
                 | AdapterType::Salesforce
                 | AdapterType::Fabric
