@@ -25,6 +25,7 @@ const ALL_PLATFORMS: &[&str] = &[
     "databricks",
     "bigquery",
     "duckdb",
+    "motherduck",
     "lakecompute",
     "spark",
 ];
@@ -341,6 +342,15 @@ const LOCAL_FILESYSTEM_DUCKDB_FIELDS: &[FieldSpec] = &[
         .doc("Local file extension / DuckDB COPY format. Defaults to parquet."),
 ];
 
+const MOTHERDUCK_FIELDS: &[FieldSpec] = &[
+    FieldSpec::string("database")
+        .non_empty()
+        .doc("MotherDuck source database name. Defaults to the catalog name."),
+    FieldSpec::string("catalog_database")
+        .non_empty()
+        .doc("Database alias used for model routing. Defaults to database."),
+];
+
 #[derive(Debug, Clone, Copy)]
 struct PlatformBlock {
     key: &'static str,
@@ -450,6 +460,13 @@ const CATALOG_SCHEMAS: &[CatalogTypeSchema] = &[
         description: "Local filesystem catalog. DuckDB platform only.",
         presence: ConfigPresence::AllRequired,
         platforms: &[PlatformBlock::new("duckdb", LOCAL_FILESYSTEM_DUCKDB_FIELDS)],
+    },
+    CatalogTypeSchema {
+        catalog_type: CatalogType::MotherDuck,
+        table_format: "default",
+        description: "Native MotherDuck database catalog. MotherDuck platform only.",
+        presence: ConfigPresence::AllRequired,
+        platforms: &[PlatformBlock::new("motherduck", MOTHERDUCK_FIELDS)],
     },
 ];
 
@@ -764,6 +781,7 @@ pub enum CatalogType {
     BiglakeMetastore,
     DuckLake,
     LocalFilesystem,
+    MotherDuck,
 
     // Has no explicit v2 catalog.
     SnowflakeBuiltIn, // superceded by Horizon above
@@ -792,11 +810,13 @@ impl CatalogType {
             Ok(Self::DuckLake)
         } else if raw.eq_ignore_ascii_case("local_filesystem") {
             Ok(Self::LocalFilesystem)
+        } else if raw.eq_ignore_ascii_case("motherduck") {
+            Ok(Self::MotherDuck)
         } else {
             err!(
                 code => ErrorCode::InvalidConfig,
                 hacky_yml_loc => Some(span.clone()),
-                "type '{}' invalid. choose one of (horizon|glue|iceberg_rest|unity|hive_metastore|biglake_metastore|ducklake|local_filesystem)",
+                "type '{}' invalid. choose one of (horizon|glue|iceberg_rest|unity|hive_metastore|biglake_metastore|ducklake|local_filesystem|motherduck)",
                 raw
             )
         }
@@ -812,6 +832,7 @@ impl CatalogType {
             Self::BiglakeMetastore => "biglake_metastore",
             Self::DuckLake => "ducklake",
             Self::LocalFilesystem => "local_filesystem",
+            Self::MotherDuck => "motherduck",
             Self::SnowflakeBuiltIn => "BUILT_IN",
             Self::SnowflakeNative => "INFO_SCHEMA",
             Self::BigqueryNative => "INFO_SCHEMA",
@@ -846,7 +867,8 @@ impl CatalogType {
             | Self::LocalFilesystem
             | Self::BiglakeMetastore
             | Self::HiveMetastore
-            | Self::SparkNative => false,
+            | Self::SparkNative
+            | Self::MotherDuck => false,
             // Native platform storage is not readable by an external engine at all --
             // this is the warehouse-native case the check exists to catch.
             Self::SnowflakeNative | Self::BigqueryNative | Self::DuckdbNative => false,
@@ -875,7 +897,8 @@ impl CatalogType {
             | Self::SnowflakeNative
             | Self::BigqueryNative
             | Self::DuckdbNative
-            | Self::SparkNative => false,
+            | Self::SparkNative
+            | Self::MotherDuck => false,
         }
     }
 
@@ -891,6 +914,7 @@ impl CatalogType {
             "biglake_metastore" => Self::BiglakeMetastore,
             "ducklake" => Self::DuckLake,
             "local_filesystem" => Self::LocalFilesystem,
+            "motherduck" => Self::MotherDuck,
             "BUILT_IN" => Self::SnowflakeBuiltIn,
             "duckdb" => Self::DuckdbNative,
             "spark" => Self::SparkNative,
@@ -997,7 +1021,8 @@ pub trait PhysicalFormatResolver {
                 | CatalogType::SnowflakeNative
                 | CatalogType::BigqueryNative
                 | CatalogType::DuckdbNative
-                | CatalogType::SparkNative => PhysicalTableFormat::Default,
+                | CatalogType::SparkNative
+                | CatalogType::MotherDuck => PhysicalTableFormat::Default,
                 CatalogType::DuckLake => PhysicalTableFormat::DuckLake,
             },
             TableFormat::Iceberg => match self.catalog_type() {
@@ -1012,7 +1037,8 @@ pub trait PhysicalFormatResolver {
                 | CatalogType::SnowflakeNative
                 | CatalogType::BigqueryNative
                 | CatalogType::DuckdbNative
-                | CatalogType::SparkNative => PhysicalTableFormat::Iceberg,
+                | CatalogType::SparkNative
+                | CatalogType::MotherDuck => PhysicalTableFormat::Iceberg,
                 CatalogType::DuckLake => PhysicalTableFormat::DuckLake,
             },
         }
@@ -1125,6 +1151,20 @@ impl<'a> CatalogSpecView<'a> {
         self.config
             .get(yml::Value::from(platform))
             .and_then(|v| v.as_mapping())
+    }
+
+    /// (`database`, `catalog_database`) from the motherduck block. Empty values
+    /// are absent. Neither field defaults to the catalog name.
+    pub fn motherduck_configured_names(&self) -> Option<(Option<&'a str>, Option<&'a str>)> {
+        let block = self.config_block("motherduck")?;
+        let field = |key: &str| {
+            block
+                .get(yml::Value::from(key))
+                .and_then(|value| value.as_str())
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+        };
+        Some((field("database"), field("catalog_database")))
     }
 
     /// Whether the `lakecompute` adapter can read tables in this catalog: its
@@ -1563,7 +1603,8 @@ impl CatalogRegistry {
                     catalog.validate_duckdb_semantics(duckdb, "ducklake")?;
                 }
             }
-            CatalogType::HiveMetastore | CatalogType::LocalFilesystem => {}
+            CatalogType::HiveMetastore | CatalogType::LocalFilesystem | CatalogType::MotherDuck => {
+            }
             // These are not supported as explicit catalog types in catalogs.yml's `type` field.
             CatalogType::SnowflakeBuiltIn
             | CatalogType::SnowflakeNative
@@ -3184,6 +3225,52 @@ catalogs:
         assert!(
             msg.contains("requires table_format='default'"),
             "unexpected error: {msg}"
+        );
+    }
+
+    #[test]
+    fn motherduck_catalog_validates() {
+        let yaml = r#"
+catalogs:
+  - name: reporting
+    type: motherduck
+    table_format: default
+    config:
+      motherduck:
+        database: actual_database_name
+        catalog_database: reporting_alias
+"#;
+        parse_and_validate(yaml).expect("native MotherDuck catalog should validate");
+    }
+
+    #[test]
+    fn motherduck_catalog_optional_fields_must_be_non_empty() {
+        for field in ["database", "catalog_database"] {
+            let yaml = format!(
+                "catalogs:\n  - name: reporting\n    type: motherduck\n    table_format: default\n    config:\n      motherduck:\n        {field}: '  '\n"
+            );
+            let error = parse_and_validate(&yaml).unwrap_err().to_string();
+            assert!(
+                error.contains(&format!("'{field}' must be non-empty")),
+                "unexpected error: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn motherduck_catalog_rejects_iceberg_table_format() {
+        let yaml = r#"
+catalogs:
+  - name: reporting
+    type: motherduck
+    table_format: iceberg
+    config:
+      motherduck: {}
+"#;
+        let error = parse_and_validate(yaml).unwrap_err().to_string();
+        assert!(
+            error.contains("requires table_format='default'"),
+            "unexpected error: {error}"
         );
     }
 
