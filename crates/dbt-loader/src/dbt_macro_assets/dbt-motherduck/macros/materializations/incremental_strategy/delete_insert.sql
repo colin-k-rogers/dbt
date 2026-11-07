@@ -13,11 +13,7 @@
                     {{ source }}.{{ key }} = DBT_INCREMENTAL_TARGET.{{ key }}
                     {{ "and " if not loop.last}}
                 {% endfor %}
-                {% if incremental_predicates %}
-                    {% for predicate in incremental_predicates %}
-                        and {{ predicate }}
-                    {% endfor %}
-                {% endif %}
+                {{ motherduck__sql_and_predicates(incremental_predicates) }}
             );
         {% else %}
             delete from {{ target }}
@@ -26,11 +22,7 @@
                 select ({{ unique_key }})
                 from {{ source }}
             )
-            {%- if incremental_predicates %}
-                {% for predicate in incremental_predicates %}
-                    and {{ predicate }}
-                {% endfor %}
-            {%- endif -%};
+            {{ motherduck__sql_and_predicates(incremental_predicates) }};
 
         {% endif %}
     {% endif %}
@@ -41,4 +33,12 @@
         from {{ source }}
     )
 
+{%- endmacro %}
+
+{% macro motherduck__sql_and_predicates(incremental_predicates) -%}
+    {%- if incremental_predicates %}
+        {% for predicate in incremental_predicates %}
+            and {{ predicate }}
+        {% endfor %}
+    {%- endif %}
 {%- endmacro %}
