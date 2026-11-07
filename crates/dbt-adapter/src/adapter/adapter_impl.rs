@@ -1984,16 +1984,7 @@ impl AdapterImpl {
                     Ok(None)
                 }
             },
-            MotherDuck => match name {
-                "motherduck" => Ok(Some(true)),
-                _ => {
-                    emit_warn_log_message(
-                        ErrorCode::InvalidArgument,
-                        format!("Unrecognized feature: {name} for {MotherDuck} adapter"),
-                    );
-                    Ok(None)
-                }
-            },
+            MotherDuck if name == "motherduck" => Ok(Some(true)),
             Redshift => match name {
                 "datasharing" => Ok(Some(get_bool_config(
                     self.engine().as_ref(),
