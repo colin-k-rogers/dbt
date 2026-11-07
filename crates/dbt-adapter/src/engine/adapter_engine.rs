@@ -461,13 +461,13 @@ pub(crate) fn adbc_execute_with_options(
 
         // These drivers report DML counts directly from execute_update().
         // Other adapters need execute()'s schema metadata or result rows.
-        if matches!(
-            (adapter_type, fetch),
-            (AdapterType::Redshift | AdapterType::MotherDuck, false)
-        ) {
-            let rows_affected = stmt.execute_update()?;
-            token.check_cancellation()?;
-            return Ok((Arc::new(Schema::empty()), Vec::new(), rows_affected));
+        match (adapter_type, fetch) {
+            (AdapterType::Redshift | AdapterType::MotherDuck, false) => {
+                let rows_affected = stmt.execute_update()?;
+                token.check_cancellation()?;
+                return Ok((Arc::new(Schema::empty()), Vec::new(), rows_affected));
+            }
+            _ => {}
         }
 
         let t_exec = std::time::Instant::now();
