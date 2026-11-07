@@ -1016,10 +1016,7 @@ mod execute_inner_txn {
         result.unwrap();
         assert_eq!(
             session.executed,
-            [
-                "create temp table items(id integer)",
-                "insert into items values (1), (2)"
-            ]
+            ["create temp table items(id integer); insert into items values (1), (2);"]
         );
         assert!(session.options.iter().any(|(key, value)| {
             key == dbt_adbc::postgres::USE_COPY
