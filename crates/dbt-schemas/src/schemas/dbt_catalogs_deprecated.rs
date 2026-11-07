@@ -192,15 +192,11 @@ impl DbtCatalogs {
                         .get(yml::Value::from("catalog_database"))
                         .and_then(|v| v.as_str());
                     let catalog_database = match adapter_type {
-                        AdapterType::MotherDuck => configured_alias.or_else(|| {
-                            block
-                                .get(yml::Value::from("database"))
-                                .and_then(|v| v.as_str())
-                        }),
-                        _ => configured_alias,
-                    }
-                    .map(str::trim)
-                    .filter(|s| !s.is_empty());
+                        AdapterType::MotherDuck => catalog
+                            .motherduck_configured_names()
+                            .and_then(|(database, alias)| alias.or(database)),
+                        _ => configured_alias.map(str::trim).filter(|s| !s.is_empty()),
+                    };
                     Some(DeprecatedCatalogPlatformEntry {
                         adapter_type,
                         catalog_name: catalog.name,
