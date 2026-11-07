@@ -811,15 +811,20 @@ impl AdapterImpl {
         let splitter = engine.splitter();
         let adapter_type = self.adapter_type();
         let all_stmts = match adapter_type {
-            // BigQuery, DuckDB, and lake compute support multi-statement execution.
+            // BigQuery, embedded DuckDB, lake compute, and MotherDuck run a script
+            // as one call.
             //
             // BigQuery: https://cloud.google.com/bigquery/docs/reference/standard-sql/procedural-language
             //
             // DuckDB: temp tables are connection-scoped; batching CREATE TEMP + DML in one
             // execute() call avoids the need for cross-call connection caching.
             //
-            // Lake compute: also supports batching
-            Bigquery | DuckDB | MotherDuck | LakeCompute => vec![sql],
+            // Lake compute: also supports batching.
+            //
+            // MotherDuck: the driver splits a script in ExecuteScript when no rows are
+            // requested, and that splitter understands dollar quotes. A fetched query
+            // is prepared as one statement.
+            Bigquery | DuckDB | LakeCompute | MotherDuck => vec![sql],
             _ => splitter.split(sql, adapter_type),
         };
         // Filter out empty and comment-only statements.
@@ -1979,6 +1984,7 @@ impl AdapterImpl {
                     Ok(None)
                 }
             },
+            MotherDuck if name == "motherduck" => Ok(Some(true)),
             Redshift => match name {
                 "datasharing" => Ok(Some(get_bool_config(
                     self.engine().as_ref(),
@@ -6346,7 +6352,7 @@ mod tests {
                     ("attach".into(), attach),
                 ])
             }
-            Bigquery | Redshift | Spark | Databricks => Mapping::new(),
+            Bigquery | Redshift | Spark | Databricks | MotherDuck => Mapping::new(),
             _ => unimplemented!("mock config for adapter type {:?}", adapter_type),
         };
         build_engine(adapter_type, config)
@@ -7296,6 +7302,67 @@ mod tests {
             )
             .unwrap();
         assert_eq!(result, Some(true));
+    }
+
+    #[test]
+    fn test_motherduck_endpoint_features_preserve_embedded_duckdb_behavior() {
+        let env = Environment::new();
+        let state = State::new_for_env(&env);
+        let token = CancellationToken::never_cancels();
+
+        let endpoint = AdapterImpl::new(engine(MotherDuck), None);
+        assert_eq!(
+            endpoint
+                .has_feature(&state, "motherduck", token.clone())
+                .unwrap(),
+            Some(true)
+        );
+        assert_eq!(
+            endpoint
+                .has_feature(&state, "transactions", token.clone())
+                .unwrap(),
+            Some(true)
+        );
+
+        let embedded = AdapterImpl::new(
+            build_engine(
+                DuckDB,
+                Mapping::from_iter([("path".into(), ":memory:".into())]),
+            ),
+            None,
+        );
+        assert_eq!(
+            embedded
+                .has_feature(&state, "motherduck", token.clone())
+                .unwrap(),
+            Some(false)
+        );
+        assert_eq!(
+            embedded
+                .has_feature(&state, "transactions", token.clone())
+                .unwrap(),
+            Some(true)
+        );
+
+        let embedded_motherduck = AdapterImpl::new(
+            build_engine(
+                DuckDB,
+                Mapping::from_iter([("path".into(), "md:my_db?motherduck_token=test".into())]),
+            ),
+            None,
+        );
+        assert_eq!(
+            embedded_motherduck
+                .has_feature(&state, "motherduck", token.clone())
+                .unwrap(),
+            Some(true)
+        );
+        assert_eq!(
+            embedded_motherduck
+                .has_feature(&state, "transactions", token)
+                .unwrap(),
+            Some(false)
+        );
     }
 
     fn databricks_config(pairs: &[(&str, &str)]) -> AdapterConfig {

@@ -3881,19 +3881,29 @@ impl Adapter {
 
                 // dbt.run_query always passes fetch=true. We try to guess whether to actually
                 // fetch the resulting record batch based on the statement SQL contents.
-                if dbt_adapter_sql::statements::is_update_statement(sql, self.adapter_type()) {
+                //
+                // MotherDuck scripts are not fetched: the driver splits them only when
+                // execute_update is used. A single statement still returns rows.
+                let statement_count = || {
                     let splitter = self.engine().splitter();
-                    let statement_count = splitter
+                    splitter
                         .split(sql, self.adapter_type())
                         .into_iter()
                         .filter(|stmt| !splitter.is_empty(stmt, self.adapter_type()))
-                        .count();
-
-                    // we conservatively assume it's not an update statement if the executed SQL
-                    // has multiple statements
-                    if statement_count <= 1 {
+                        .count()
+                };
+                match self.adapter_type() {
+                    AdapterType::MotherDuck => {
+                        if statement_count() != 1 {
+                            fetch = false;
+                        }
+                    }
+                    _ if dbt_adapter_sql::statements::is_update_statement(sql, self.adapter_type())
+                        && statement_count() <= 1 =>
+                    {
                         fetch = false;
                     }
+                    _ => {}
                 }
 
                 let (response, table) =
