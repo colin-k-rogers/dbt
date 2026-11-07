@@ -1,0 +1,7 @@
+kind: Features
+body: Add a MotherDuck profile method field, defaulting to token, with an externalbrowser stub.
+time: 2026-11-02T11:37:57.640587-08:00
+custom:
+    author: colin-k-rogers
+    issue: "16817"
+    project: dbt-core

@@ -4,8 +4,8 @@ use crate::schemas::relations::DEFAULT_DATABRICKS_DATABASE;
 use crate::schemas::serde::{DuckDbExtension, QueryTag, StringOrInteger, StringOrMap};
 
 use dbt_adapter_core::AdapterType;
-use dbt_common::ErrorCode;
 use dbt_common::tracing::dbt_emit::emit_warn_log_message;
+use dbt_common::ErrorCode;
 use dbt_yaml::DbtSchema;
 use dbt_yaml::UntaggedEnumDeserialize;
 use merge::Merge;
@@ -43,6 +43,7 @@ pub enum DbConfig {
     Redshift(Box<RedshiftDbConfig>),
     Snowflake(Box<SnowflakeDbConfig>),
     Postgres(Box<PostgresDbConfig>),
+    MotherDuck(Box<MotherDuckDbConfig>),
     Bigquery(Box<BigqueryDbConfig>),
     Trino(Box<TrinoDbConfig>),
     Datafusion(Box<DatafusionDbConfig>),
@@ -102,6 +103,7 @@ macro_rules! impl_from_db_config {
 impl_from_db_config!(Redshift, RedshiftDbConfig);
 impl_from_db_config!(Snowflake, SnowflakeDbConfig);
 impl_from_db_config!(Postgres, PostgresDbConfig);
+impl_from_db_config!(MotherDuck, MotherDuckDbConfig);
 impl_from_db_config!(Bigquery, BigqueryDbConfig);
 impl_from_db_config!(Trino, TrinoDbConfig);
 impl_from_db_config!(Datafusion, DatafusionDbConfig);
@@ -152,6 +154,7 @@ impl DbConfig {
         match self {
             DbConfig::Snowflake(config) => config.account.as_deref(),
             DbConfig::Postgres(config) => config.host.as_deref(),
+            DbConfig::MotherDuck(config) => config.host.as_deref().or(config.region.as_deref()),
             DbConfig::Bigquery(config) => config.database.as_deref(),
             DbConfig::Trino(config) => config.host.as_deref(),
             DbConfig::Datafusion(config) => config.database.as_deref(),
@@ -234,6 +237,22 @@ impl DbConfig {
                 "application_name",
                 "retries",
             ],
+            // `token` is deliberately absent: dbt debug prints these values.
+            // `user` is absent because a MotherDuck profile has no username.
+            // `settings` matches DuckDB: the profile map is a connection key, so
+            // `to_connection_mapping` keeps it. `token` stays off this list.
+            AdapterType::MotherDuck => &[
+                "host",
+                "port",
+                "database",
+                "schema",
+                "sslrootcert",
+                "connect_timeout",
+                "region",
+                "session_name",
+                "attach_mode",
+                "settings",
+            ],
             AdapterType::Bigquery => &[
                 "method",
                 "database",
@@ -312,8 +331,7 @@ impl DbConfig {
                 "fivetran_auth_url",
             ],
             // Adapter types with no `DbConfig` variant, so nothing to display.
-            AdapterType::MotherDuck
-            | AdapterType::Athena
+            AdapterType::Athena
             | AdapterType::Starburst
             | AdapterType::Dremio
             | AdapterType::Oracle => &[],
@@ -414,6 +432,7 @@ impl DbConfig {
         match self {
             DbConfig::Snowflake(config) => dbt_yaml::to_value(config),
             DbConfig::Postgres(config) => dbt_yaml::to_value(config),
+            DbConfig::MotherDuck(config) => dbt_yaml::to_value(config),
             DbConfig::Bigquery(config) => dbt_yaml::to_value(config),
             DbConfig::Trino(config) => dbt_yaml::to_value(config),
             DbConfig::Datafusion(config) => dbt_yaml::to_value(config),
@@ -434,6 +453,7 @@ impl DbConfig {
             DbConfig::Redshift(..) => AdapterType::Redshift,
             DbConfig::Snowflake(..) => AdapterType::Snowflake,
             DbConfig::Postgres(..) => AdapterType::Postgres,
+            DbConfig::MotherDuck(..) => AdapterType::MotherDuck,
             DbConfig::Bigquery(..) => AdapterType::Bigquery,
             DbConfig::Trino(..) => AdapterType::Trino,
             DbConfig::Datafusion(..) => AdapterType::Datafusion,
@@ -453,6 +473,7 @@ impl DbConfig {
             DbConfig::Redshift(config) => config.database.as_ref(),
             DbConfig::Snowflake(config) => config.database.as_ref(),
             DbConfig::Postgres(config) => config.database.as_ref().or(config.database.as_ref()),
+            DbConfig::MotherDuck(config) => config.database.as_ref(),
             DbConfig::Bigquery(config) => config.database.as_ref(),
             DbConfig::Trino(config) => config.database.as_ref(),
             DbConfig::Datafusion(config) => config.database.as_ref(),
@@ -493,6 +514,7 @@ impl DbConfig {
             DbConfig::Redshift(config) => config.schema.as_ref(),
             DbConfig::Snowflake(config) => config.schema.as_ref(),
             DbConfig::Postgres(config) => config.schema.as_ref(),
+            DbConfig::MotherDuck(config) => config.schema.as_ref(),
             DbConfig::Trino(config) => config.schema.as_ref(),
             DbConfig::Bigquery(config) => config.schema.as_ref(),
             DbConfig::Datafusion(config) => config.schema.as_ref(),
@@ -526,6 +548,7 @@ impl DbConfig {
             DbConfig::Bigquery(config) => config.threads.as_ref(),
             DbConfig::Redshift(config) => config.threads.as_ref(),
             DbConfig::Postgres(config) => config.threads.as_ref(),
+            DbConfig::MotherDuck(config) => config.threads.as_ref(),
             DbConfig::Trino(config) => config.threads.as_ref(),
             DbConfig::DuckDB(config) => config.threads.as_ref(),
             DbConfig::Datafusion(_) => None,
@@ -543,6 +566,7 @@ impl DbConfig {
             DbConfig::Snowflake(config) => config.threads = threads,
             DbConfig::Databricks(config) => config.threads = threads,
             DbConfig::Postgres(config) => config.threads = threads,
+            DbConfig::MotherDuck(config) => config.threads = threads,
             DbConfig::Bigquery(config) => config.threads = threads,
             DbConfig::Trino(config) => config.threads = threads,
             DbConfig::Redshift(config) => config.threads = threads,
@@ -941,6 +965,78 @@ pub struct PostgresDbConfig {
     pub user: Option<String>, // Setting as Option but required as of dbt 1.7.1
     #[serde(skip_serializing_if = "Option::is_none")]
     pub password: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default, DbtSchema, Merge)]
+#[merge(strategy = merge_strategies_extend::overwrite_option)]
+#[serde(rename_all = "snake_case")]
+pub struct MotherDuckDbConfig {
+    pub host: Option<String>,
+    #[serde(default = "default_motherduck_port")]
+    pub port: Option<StringOrInteger>,
+    /// Not a MotherDuck credential. Kept so `user` and `username` fail parse
+    /// instead of being ignored.
+    #[serde(
+        default,
+        rename = "user",
+        alias = "username",
+        skip_serializing,
+        deserialize_with = "reject_motherduck_username"
+    )]
+    #[schemars(skip)]
+    #[merge(skip)]
+    #[allow(dead_code)]
+    _username: Option<()>,
+    pub token: Option<String>,
+    /// Authentication method. `token` sends `token` as the driver password option.
+    /// `externalbrowser` is accepted by the profile and not implemented yet.
+    #[serde(default = "default_motherduck_method")]
+    pub method: Option<String>,
+    pub database: Option<String>,
+    pub schema: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sslrootcert: Option<String>,
+    #[serde(default = "default_motherduck_connect_timeout")]
+    pub connect_timeout: Option<StringOrInteger>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub threads: Option<StringOrInteger>,
+    /// MotherDuck region. The driver connects to `pg.<region>-aws.motherduck.com`.
+    /// Mutually exclusive with `host`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub region: Option<String>,
+    /// `single` attaches the named database. `workspace` attaches every
+    /// database in the account. Default `single`.
+    #[serde(default = "default_motherduck_attach_mode")]
+    pub attach_mode: Option<String>,
+    /// Passed to the driver as `adbc.motherduck.session_name`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_name: Option<String>,
+}
+
+fn default_motherduck_method() -> Option<String> {
+    Some("token".to_string())
+}
+
+fn default_motherduck_port() -> Option<StringOrInteger> {
+    Some(StringOrInteger::Integer(5432))
+}
+
+fn default_motherduck_attach_mode() -> Option<String> {
+    Some("single".to_string())
+}
+
+fn reject_motherduck_username<'de, D>(deserializer: D) -> Result<Option<()>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let _ = <serde::de::IgnoredAny as serde::Deserialize>::deserialize(deserializer)?;
+    Err(serde::de::Error::custom(
+        "MotherDuck profiles do not accept `user` or `username`",
+    ))
+}
+
+fn default_motherduck_connect_timeout() -> Option<StringOrInteger> {
+    Some(StringOrInteger::Integer(240))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, DbtSchema)]
@@ -1825,6 +1921,9 @@ pub struct PostgresTargetEnv {
     pub host: String,
     pub user: String,
     pub port: StringOrInteger,
+    /// MotherDuck profile `settings`. Postgres leaves this unset.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub settings: Option<HashMap<String, YmlValue>>,
     pub __common__: CommonTargetContext,
 }
 
@@ -2158,6 +2257,36 @@ fn missing(field: &str) -> String {
     format!("In file `profiles.yml`, field `{field}` is required.")
 }
 
+impl MotherDuckDbConfig {
+    /// Host shown as `target.host`. A region leaves the connection URI without a
+    /// host and lets the driver resolve `pg.<region>-aws.motherduck.com`.
+    fn target_host(&self) -> Result<String, String> {
+        match (self.host.as_deref(), self.region.as_deref()) {
+            (Some(host), None) => Ok(host.to_string()),
+            (None, Some(region)) => Ok(format!("pg.{region}-aws.motherduck.com")),
+            (Some(_), Some(_)) => {
+                Err("In file `profiles.yml`, set `host` or `region`, not both.".to_string())
+            }
+            (None, None) => Err(missing("host or region")),
+        }
+    }
+}
+
+/// Profile `settings` for the Jinja target. Drops nested credentials the same
+/// way `to_connection_mapping` does, so a token inside the map is not rendered.
+fn exposed_profile_settings(
+    settings: Option<HashMap<String, YmlValue>>,
+) -> Result<Option<HashMap<String, YmlValue>>, String> {
+    let Some(settings) = settings else {
+        return Ok(None);
+    };
+    let mut value = dbt_yaml::to_value(&settings).map_err(|err| err.to_string())?;
+    DbConfig::redact_nested_credentials(&mut value);
+    dbt_yaml::from_value(value)
+        .map(Some)
+        .map_err(|err| err.to_string())
+}
+
 // This target context is only to be used in rendering yml's
 // See: https://docs.getdbt.com/reference/dbt-jinja-functions/target
 impl TryFrom<DbConfig> for TargetContext {
@@ -2256,6 +2385,28 @@ impl TryFrom<DbConfig> for TargetContext {
                     host: config.host.ok_or_else(|| missing("host"))?,
                     user: config.user.ok_or_else(|| missing("user"))?,
                     port: config.port.ok_or_else(|| missing("port"))?,
+                    settings: None,
+                    __common__: CommonTargetContext {
+                        database,
+                        schema: config.schema.ok_or_else(|| missing("schema"))?,
+                        type_: adapter_type,
+                        threads: None,
+                    },
+                }))
+            }
+
+            DbConfig::MotherDuck(config) => {
+                let host = config.target_host()?;
+                let database = config.database.ok_or_else(|| missing("database"))?;
+                Ok(TargetContext::Postgres(PostgresTargetEnv {
+                    dbname: database.clone(),
+                    host,
+                    // MotherDuck has no database user. The shared Postgres target
+                    // shape still requires the field.
+                    user: String::new(),
+                    port: config.port.ok_or_else(|| missing("port"))?,
+                    // Jinja `target` is this struct, not the connection-key list.
+                    settings: exposed_profile_settings(config.settings)?,
                     __common__: CommonTargetContext {
                         database,
                         schema: config.schema.ok_or_else(|| missing("schema"))?,
@@ -2522,12 +2673,10 @@ mod tests {
 
         // The adapter's retired external name is not a tag this enum accepts
         // either, same as any other unrecognized `type:`.
-        assert!(
-            dbt_yaml::from_str::<DbConfig>(
-                "type: lake_compute\nbase_url: https://example.invalid\n"
-            )
-            .is_err(),
-        );
+        assert!(dbt_yaml::from_str::<DbConfig>(
+            "type: lake_compute\nbase_url: https://example.invalid\n"
+        )
+        .is_err(),);
     }
 
     #[test]
@@ -2994,6 +3143,196 @@ extensions:
                 );
             }
         }
+    }
+
+    #[test]
+    fn motherduck_profile_defaults_target_context_and_redaction() {
+        let config: DbConfig = dbt_yaml::from_str(
+            r#"
+type: motherduck
+host: pg.us-east-1-aws.motherduck.com
+token: super-secret
+database: analytics
+schema: main
+"#,
+        )
+        .unwrap();
+
+        let DbConfig::MotherDuck(motherduck) = &config else {
+            panic!("expected MotherDuck config");
+        };
+        assert_eq!(motherduck.port, Some(StringOrInteger::Integer(5432)));
+        assert_eq!(motherduck.sslrootcert, None);
+        assert_eq!(motherduck.attach_mode.as_deref(), Some("single"));
+        assert_eq!(
+            motherduck.connect_timeout,
+            Some(StringOrInteger::Integer(240))
+        );
+
+        let connection = config.to_connection_mapping().unwrap();
+        let rendered = dbt_yaml::to_string(&connection).unwrap();
+        assert!(!rendered.contains("super-secret"), "{rendered}");
+        assert!(!connection.contains_key(dbt_yaml::Value::from("token")));
+        assert_eq!(
+            connection
+                .get(dbt_yaml::Value::from("connect_timeout"))
+                .and_then(dbt_yaml::Value::as_i64),
+            Some(240)
+        );
+
+        let target = TargetContext::try_from(config).expect("MotherDuck target context");
+        let TargetContext::Postgres(target) = target else {
+            panic!("expected PostgreSQL-shaped target context");
+        };
+        assert_eq!(target.__common__.type_, "motherduck");
+        assert_eq!(target.__common__.database, "analytics");
+        assert_eq!(target.__common__.schema, "main");
+        assert_eq!(target.dbname, "analytics");
+        assert_eq!(target.user, "");
+        assert_eq!(target.port, StringOrInteger::Integer(5432));
+        assert!(target.settings.is_none());
+    }
+
+    #[test]
+    fn motherduck_settings_reach_the_target_and_connection_mapping() {
+        let config: DbConfig = dbt_yaml::from_str(
+            r#"
+type: motherduck
+host: pg.us-east-1-aws.motherduck.com
+token: super-secret
+database: analytics
+schema: main
+settings:
+  memory_limit: 4GB
+  motherduck_token: nested-secret
+"#,
+        )
+        .unwrap();
+
+        let connection = config.to_connection_mapping().unwrap();
+        let rendered = dbt_yaml::to_string(&connection).unwrap();
+        assert!(!rendered.contains("super-secret"), "{rendered}");
+        assert!(!rendered.contains("nested-secret"), "{rendered}");
+        let settings = connection
+            .get(dbt_yaml::Value::from("settings"))
+            .and_then(dbt_yaml::Value::as_mapping)
+            .expect("connection mapping should include settings");
+        assert_eq!(
+            settings
+                .get(dbt_yaml::Value::from("memory_limit"))
+                .and_then(dbt_yaml::Value::as_str),
+            Some("4GB")
+        );
+
+        let target = TargetContext::try_from(config).expect("MotherDuck target context");
+        let target = dbt_yaml::to_value(&target).expect("target should serialize");
+        let target = target.as_mapping().expect("target should be a mapping");
+        assert_eq!(
+            target
+                .get(dbt_yaml::Value::from("type"))
+                .and_then(dbt_yaml::Value::as_str),
+            Some("motherduck")
+        );
+        let settings = target
+            .get(dbt_yaml::Value::from("settings"))
+            .and_then(dbt_yaml::Value::as_mapping)
+            .expect("Jinja target.settings should be the profile map");
+        assert_eq!(
+            settings
+                .get(dbt_yaml::Value::from("memory_limit"))
+                .and_then(dbt_yaml::Value::as_str),
+            Some("4GB")
+        );
+        assert!(
+            !settings.contains_key(dbt_yaml::Value::from("motherduck_token")),
+            "nested credential leaked into target.settings"
+        );
+    }
+
+    #[test]
+    fn motherduck_profile_rejects_a_username() {
+        for field in ["user", "username"] {
+            let err = dbt_yaml::from_str::<DbConfig>(&format!(
+                "type: motherduck\n\
+                 host: pg.us-east-1-aws.motherduck.com\n\
+                 {field}: analyst\n\
+                 database: analytics\n\
+                 schema: main"
+            ))
+            .expect_err("username must be rejected");
+            assert!(
+                err.to_string()
+                    .contains("MotherDuck profiles do not accept `user` or `username`"),
+                "{field}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn motherduck_region_fills_target_host_and_rejects_a_host() {
+        let config: DbConfig = dbt_yaml::from_str(
+            r#"
+type: motherduck
+region: us-east-1
+token: super-secret
+database: analytics
+schema: main
+"#,
+        )
+        .unwrap();
+        let target = TargetContext::try_from(config).expect("region target context");
+        let TargetContext::Postgres(target) = target else {
+            panic!("expected PostgreSQL-shaped target context");
+        };
+        assert_eq!(target.host, "pg.us-east-1-aws.motherduck.com");
+
+        let both: DbConfig = dbt_yaml::from_str(
+            r#"
+type: motherduck
+host: pg.us-east-1-aws.motherduck.com
+region: us-east-1
+database: analytics
+schema: main
+"#,
+        )
+        .unwrap();
+        let Err(err) = TargetContext::try_from(both) else {
+            panic!("host and region must be rejected");
+        };
+        assert_eq!(
+            err,
+            "In file `profiles.yml`, set `host` or `region`, not both."
+        );
+    }
+
+    #[test]
+    fn motherduck_profile_accepts_string_port_and_timeout() {
+        let config: DbConfig = dbt_yaml::from_str(
+            r#"
+type: motherduck
+host: pg.us-east-1-aws.motherduck.com
+port: "6543"
+attach_mode: workspace
+token: super-secret
+database: analytics
+schema: main
+connect_timeout: "30"
+"#,
+        )
+        .unwrap();
+
+        let DbConfig::MotherDuck(motherduck) = config else {
+            panic!("expected MotherDuck config");
+        };
+        assert_eq!(
+            motherduck.port,
+            Some(StringOrInteger::String("6543".to_string()))
+        );
+        assert_eq!(
+            motherduck.connect_timeout,
+            Some(StringOrInteger::String("30".to_string()))
+        );
+        assert_eq!(motherduck.attach_mode.as_deref(), Some("workspace"));
     }
 
     /// A displayable key can nest a credential: DuckDB's `settings` carries
