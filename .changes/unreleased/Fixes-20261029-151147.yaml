@@ -1,0 +1,7 @@
+kind: Fixes
+body: Create the MotherDuck staging schema before incremental and snapshot writes.
+time: 2026-10-29T15:11:47.4214-07:00
+custom:
+    author: colin-k-rogers
+    issue: "16817"
+    project: dbt-core

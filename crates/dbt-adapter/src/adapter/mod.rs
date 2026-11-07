@@ -54,6 +54,7 @@ use std::sync::Arc;
 
 pub mod adapter_factory;
 pub mod adapter_impl;
+pub mod motherduck;
 pub mod store;
 pub use adapter_factory::*;
 pub use adapter_impl::{AdapterImpl, alias_types_from_state, quote_component, quote_ident};
@@ -2708,9 +2709,12 @@ impl Adapter {
         database: &str,
         identifier: &str,
         batch_id: &str,
+        temp_schema: &str,
     ) -> AdapterResult<BTreeMap<String, Value>> {
         match &self.inner {
-            Typed { adapter, .. } => adapter.get_temp_relation_path(database, identifier, batch_id),
+            Typed { adapter, .. } => {
+                adapter.get_temp_relation_path(database, identifier, batch_id, temp_schema)
+            }
             Parse(_) => Err(AdapterError::new(
                 AdapterErrorKind::NotSupported,
                 "get_temp_relation_path is not available during parsing",
@@ -4185,6 +4189,9 @@ impl Adapter {
                 let iter = ArgsIter::new(name, &["relation"], args);
                 let relation_val = iter.next_arg::<&Value>()?;
                 let batch_id = iter.next_kwarg::<Option<&str>>("batch_id")?.unwrap_or("");
+                let temp_schema = iter
+                    .next_kwarg::<Option<&str>>("temp_schema")?
+                    .unwrap_or("");
                 iter.finish()?;
                 let database = relation_val
                     .get_attr("database")
@@ -4221,7 +4228,7 @@ impl Adapter {
                         )
                     })?;
                 let path = self
-                    .get_temp_relation_path(&database, &identifier, batch_id)
+                    .get_temp_relation_path(&database, &identifier, batch_id, temp_schema)
                     .map_err(minijinja::Error::from)?;
                 Ok(Value::from_object(path))
             }
