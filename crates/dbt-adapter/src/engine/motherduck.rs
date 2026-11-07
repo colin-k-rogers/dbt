@@ -49,6 +49,7 @@ fn settings_sql(config: &AdapterConfig) -> AdapterResult<Vec<String>> {
         .collect()
 }
 
+#[derive(Debug)]
 struct InitStatement {
     sql: String,
     catalog: Option<String>,
@@ -212,7 +213,7 @@ settings:
         let err = init_statement_error(1, Some("reporting"), Some(&driver));
         assert_eq!(
             err.message(),
-            "MotherDuck session initialization statement 1 failed for catalog 'analytics': Catalog Error: database 'missing' does not exist"
+            "MotherDuck session initialization statement 1 failed for catalog 'reporting': Catalog Error: database 'missing' does not exist"
         );
     }
 
