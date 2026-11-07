@@ -6,10 +6,15 @@ use url::{Host, Url};
 use crate::{AdapterConfig, Auth, AuthError, AuthWarningPrinter, auth_configure_pipeline};
 
 #[derive(Debug)]
+enum MotherDuckLocation<'a> {
+    Host(&'a str),
+    Region(&'a str),
+}
+
+#[derive(Debug)]
 enum MotherDuckAuthIR<'a> {
     Endpoint {
-        host: Option<&'a str>,
-        region: Option<&'a str>,
+        location: MotherDuckLocation<'a>,
         token: Option<&'a str>,
         port: u16,
         database: &'a str,
@@ -17,14 +22,7 @@ enum MotherDuckAuthIR<'a> {
         connect_timeout: Cow<'a, str>,
         session_name: Option<&'a str>,
         attach_mode: &'a str,
-        method: MotherDuckAuthMethod,
     },
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum MotherDuckAuthMethod {
-    Token,
-    ExternalBrowser,
 }
 
 impl MotherDuckAuthIR<'_> {
@@ -35,8 +33,7 @@ impl MotherDuckAuthIR<'_> {
     ) -> Result<database::Builder, AuthError> {
         match self {
             Self::Endpoint {
-                host,
-                region,
+                location,
                 token,
                 port,
                 database,
@@ -44,14 +41,8 @@ impl MotherDuckAuthIR<'_> {
                 connect_timeout,
                 session_name,
                 attach_mode,
-                method,
             } => {
-                if method == MotherDuckAuthMethod::ExternalBrowser {
-                    return Err(AuthError::config(
-                        "MotherDuck externalbrowser authentication is not implemented yet.",
-                    ));
-                }
-                let mut uri = endpoint_uri(host, port, database)?;
+                let (mut uri, region) = endpoint_uri(&location, port, database)?;
                 {
                     let mut query = uri.query_pairs_mut();
                     query
@@ -61,7 +52,7 @@ impl MotherDuckAuthIR<'_> {
                         query.append_pair("sslrootcert", sslrootcert);
                     }
                     // A hostless URL cannot carry a port in its authority.
-                    if host.is_none() {
+                    if region.is_some() {
                         query.append_pair("port", &port.to_string());
                     }
                 }
@@ -96,21 +87,29 @@ fn non_empty<'a>(config: &'a AdapterConfig, field: &str) -> Result<&'a str, Auth
     Ok(value)
 }
 
-fn endpoint_uri(host: Option<&str>, port: u16, database: &str) -> Result<Url, AuthError> {
-    let mut uri = Url::parse(if host.is_some() {
-        "postgresql://localhost"
-    } else {
-        "postgresql:///"
-    })
-    .expect("the static MotherDuck PostgreSQL URL is valid");
-    if let Some(host) = host {
-        uri.set_host(Some(host))
-            .map_err(|_| AuthError::config("host is not a valid hostname"))?;
-        uri.set_port(Some(port))
-            .map_err(|_| AuthError::config("port must be between 1 and 65535"))?;
-    }
+fn endpoint_uri<'a>(
+    location: &MotherDuckLocation<'a>,
+    port: u16,
+    database: &str,
+) -> Result<(Url, Option<&'a str>), AuthError> {
+    let (mut uri, region) = match location {
+        MotherDuckLocation::Host(host) => {
+            let mut uri = Url::parse("postgresql://localhost")
+                .expect("the static MotherDuck PostgreSQL URL is valid");
+            uri.set_host(Some(host))
+                .map_err(|_| AuthError::config("host is not a valid hostname"))?;
+            uri.set_port(Some(port))
+                .map_err(|_| AuthError::config("port must be between 1 and 65535"))?;
+            (uri, None)
+        }
+        MotherDuckLocation::Region(region) => (
+            Url::parse("postgresql:///")
+                .expect("the static MotherDuck PostgreSQL URL is valid"),
+            Some(*region),
+        ),
+    };
     uri.set_path(database);
-    Ok(uri)
+    Ok((uri, region))
 }
 
 fn optional_non_empty<'a>(
@@ -159,13 +158,14 @@ fn parse_auth<'a>(
         }
         None => None,
     };
-    match (host, region) {
+    let location = match (host, region) {
+        (Some(host), None) => MotherDuckLocation::Host(host),
+        (None, Some(region)) => MotherDuckLocation::Region(region),
         (Some(_), Some(_)) => {
             return Err(AuthError::config("set host or region, not both"));
         }
         (None, None) => return Err(AuthError::config("host or region is required")),
-        _ => {}
-    }
+    };
     let session_name = match optional_non_empty(config, "session_name")? {
         Some(session_name) if valid_session_name(session_name) => Some(session_name),
         Some(_) => {
@@ -205,9 +205,9 @@ fn parse_auth<'a>(
         ));
     }
 
+    auth_method(config)?;
     Ok(MotherDuckAuthIR::Endpoint {
-        host,
-        region,
+        location,
         token: optional_non_empty(config, "token")?,
         session_name,
         port,
@@ -215,7 +215,6 @@ fn parse_auth<'a>(
         sslrootcert: optional_non_empty(config, "sslrootcert")?,
         connect_timeout,
         attach_mode: attach_mode(config)?,
-        method: auth_method(config)?,
     })
 }
 
@@ -228,15 +227,17 @@ fn attach_mode(config: &AdapterConfig) -> Result<&str, AuthError> {
     }
 }
 
-fn auth_method(config: &AdapterConfig) -> Result<MotherDuckAuthMethod, AuthError> {
+fn auth_method(config: &AdapterConfig) -> Result<(), AuthError> {
     match config
         .get_str("method")
         .unwrap_or("token")
         .to_ascii_lowercase()
         .as_str()
     {
-        "token" => Ok(MotherDuckAuthMethod::Token),
-        "externalbrowser" => Ok(MotherDuckAuthMethod::ExternalBrowser),
+        "token" => Ok(()),
+        "externalbrowser" => Err(AuthError::config(
+            "MotherDuck externalbrowser authentication is not implemented yet.",
+        )),
         other => Err(AuthError::config(format!(
             "MotherDuck authentication method '{other}' is not supported. Use 'token' or 'externalbrowser'."
         ))),
