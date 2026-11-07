@@ -230,10 +230,13 @@ fn incremental_harness(adapter_type: AdapterType, strategy_sql: &'static str) ->
         Ok(RelationObject::new(Arc::clone(&existing)).into_value())
     });
     harness.mock().on("has_feature", move |args| {
-        Ok(Value::from(
-            adapter_type == AdapterType::MotherDuck
-                && args.first().and_then(Value::as_str) == Some("motherduck"),
-        ))
+        let enabled = match adapter_type {
+            AdapterType::MotherDuck => {
+                args.first().and_then(Value::as_str) == Some("motherduck")
+            }
+            _ => false,
+        };
+        Ok(Value::from(enabled))
     });
     harness
         .mock()
@@ -296,10 +299,10 @@ fn render_second_incremental(adapter_type: AdapterType, strategy_sql: &'static s
         .with("dbt_version", Value::from("2.0.0"))
         .build();
 
-    let materialization = if adapter_type == AdapterType::MotherDuck {
-        "materialization_incremental_motherduck"
-    } else {
-        "materialization_incremental_duckdb"
+    let materialization = match adapter_type {
+        AdapterType::MotherDuck => "materialization_incremental_motherduck",
+        AdapterType::DuckDB => "materialization_incremental_duckdb",
+        other => panic!("unexpected adapter {other:?}"),
     };
     harness
         .render(&format!("{{{{ {materialization}() }}}}"), ctx)
