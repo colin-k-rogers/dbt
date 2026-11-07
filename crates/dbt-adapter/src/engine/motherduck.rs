@@ -49,7 +49,12 @@ fn settings_sql(config: &AdapterConfig) -> AdapterResult<Vec<String>> {
         .collect()
 }
 
-fn catalog_attach_sql(view: &DbtCatalogsView<'_>) -> AdapterResult<Vec<String>> {
+struct InitStatement {
+    sql: String,
+    catalog: Option<String>,
+}
+
+fn catalog_attach_sql(view: &DbtCatalogsView<'_>) -> AdapterResult<Vec<InitStatement>> {
     let mut seen_aliases = HashMap::new();
     let mut statements = Vec::new();
 
@@ -70,7 +75,10 @@ fn catalog_attach_sql(view: &DbtCatalogsView<'_>) -> AdapterResult<Vec<String>> 
         let database =
             dbt_adapter_sql::ident::escape_string_literal(&database, AdapterType::MotherDuck);
         let alias = dbt_adapter_sql::ident::quote_identifier(&alias, AdapterType::MotherDuck);
-        statements.push(format!("ATTACH IF NOT EXISTS 'md:{database}' AS {alias}"));
+        statements.push(InitStatement {
+            sql: format!("ATTACH IF NOT EXISTS 'md:{database}' AS {alias}"),
+            catalog: Some(catalog.name.to_string()),
+        });
     }
 
     Ok(statements)
@@ -79,13 +87,16 @@ fn catalog_attach_sql(view: &DbtCatalogsView<'_>) -> AdapterResult<Vec<String>> 
 fn init_sql_with_catalogs(
     config: &AdapterConfig,
     catalogs: Option<&DbtCatalogsView<'_>>,
-) -> AdapterResult<Vec<String>> {
+) -> AdapterResult<Vec<InitStatement>> {
     let mut statements = catalogs.map_or_else(|| Ok(Vec::new()), catalog_attach_sql)?;
-    statements.extend(settings_sql(config)?);
+    statements.extend(settings_sql(config)?.into_iter().map(|sql| InitStatement {
+        sql,
+        catalog: None,
+    }));
     Ok(statements)
 }
 
-fn init_sql(config: &AdapterConfig) -> AdapterResult<Vec<String>> {
+fn init_sql(config: &AdapterConfig) -> AdapterResult<Vec<InitStatement>> {
     if !crate::load_catalogs::fetch_use_catalogs_v2() {
         return init_sql_with_catalogs(config, None);
     }
@@ -98,40 +109,38 @@ fn init_sql(config: &AdapterConfig) -> AdapterResult<Vec<String>> {
     init_sql_with_catalogs(config, Some(&view))
 }
 
-fn attach_alias(sql: &str) -> Option<&str> {
-    let alias = sql.rsplit_once(" AS ")?.1.trim();
-    let alias = alias
-        .strip_prefix('"')
-        .and_then(|rest| rest.strip_suffix('"'))
-        .unwrap_or(alias);
-    (!alias.is_empty()).then_some(alias)
-}
-
-fn init_statement_error(index: usize, sql: &str, source: Option<&AdapterError>) -> AdapterError {
-    // Settings SQL can contain a secret. Catalog attach failures name the
-    // catalogs.yml alias and the driver error.
-    if let Some(catalog) = attach_alias(sql) {
-        let detail = source.map(AdapterError::message).unwrap_or("failed");
+fn init_statement_error(
+    index: usize,
+    catalog: Option<&str>,
+    source: Option<&AdapterError>,
+) -> AdapterError {
+    let Some(catalog) = catalog else {
         return AdapterError::new(
             AdapterErrorKind::Driver,
-            format!(
-                "MotherDuck session initialization statement {index} failed for catalog '{catalog}': {detail}"
-            ),
+            format!("MotherDuck session initialization statement {index} failed"),
         );
-    }
+    };
+    let detail = source.map(AdapterError::message).unwrap_or("failed");
     AdapterError::new(
         AdapterErrorKind::Driver,
-        format!("MotherDuck session initialization statement {index} failed"),
+        format!(
+            "MotherDuck session initialization statement {index} failed for catalog '{catalog}': {detail}"
+        ),
     )
 }
 
 pub fn apply_init_sql(conn: &mut dyn Connection, config: &AdapterConfig) -> AdapterResult<()> {
-    for (idx, sql) in init_sql(config)?.iter().enumerate() {
+    for (idx, statement) in init_sql(config)?.iter().enumerate() {
         let mut stmt = conn.new_statement().map_err(adbc_error_to_adapter_error)?;
-        stmt.set_sql_query(sql)
-            .map_err(|err| init_statement_error(idx + 1, sql, Some(&adbc_error_to_adapter_error(err))))?;
-        stmt.execute_update()
-            .map_err(|err| init_statement_error(idx + 1, sql, Some(&adbc_error_to_adapter_error(err))))?;
+        let fail = |err| {
+            init_statement_error(
+                idx + 1,
+                statement.catalog.as_deref(),
+                Some(&adbc_error_to_adapter_error(err)),
+            )
+        };
+        stmt.set_sql_query(&statement.sql).map_err(fail)?;
+        stmt.execute_update().map_err(fail)?;
     }
     Ok(())
 }
@@ -188,7 +197,8 @@ settings:
 
     #[test]
     fn execution_errors_do_not_echo_secret_sql_or_driver_errors() {
-        let err = init_statement_error(2, "SET token = 'secret'", None);
+        let driver = AdapterError::new(AdapterErrorKind::Driver, "SET token = 'secret'");
+        let err = init_statement_error(2, None, Some(&driver));
         assert_eq!(
             err.message(),
             "MotherDuck session initialization statement 2 failed"
@@ -199,11 +209,7 @@ settings:
             AdapterErrorKind::Driver,
             "Catalog Error: database 'missing' does not exist",
         );
-        let err = init_statement_error(
-            1,
-            r#"ATTACH IF NOT EXISTS 'md:missing' AS "analytics""#,
-            Some(&driver),
-        );
+        let err = init_statement_error(1, Some("reporting"), Some(&driver));
         assert_eq!(
             err.message(),
             "MotherDuck session initialization statement 1 failed for catalog 'analytics': Catalog Error: database 'missing' does not exist"
@@ -253,8 +259,12 @@ catalogs:
         catalog_database: routed_db_only
 "#,
             |view| {
+                let statements = catalog_attach_sql(view).unwrap();
                 assert_eq!(
-                    catalog_attach_sql(view).unwrap(),
+                    statements
+                        .iter()
+                        .map(|statement| statement.sql.as_str())
+                        .collect::<Vec<_>>(),
                     vec![
                         r#"ATTACH IF NOT EXISTS 'md:analytics' AS "analytics""#,
                         r#"ATTACH IF NOT EXISTS 'md:source_db' AS "routed_db""#,
@@ -280,8 +290,12 @@ catalogs:
         catalog_database: 'route"db'
 "#,
             |view| {
+                let statements = catalog_attach_sql(view).unwrap();
                 assert_eq!(
-                    catalog_attach_sql(view).unwrap(),
+                    statements
+                        .iter()
+                        .map(|statement| statement.sql.as_str())
+                        .collect::<Vec<_>>(),
                     vec![r#"ATTACH IF NOT EXISTS 'md:team''s data' AS "route""db""#]
                 );
             },
@@ -360,7 +374,10 @@ settings:
                 )
                 .unwrap();
                 assert_eq!(
-                    statements,
+                    statements
+                        .iter()
+                        .map(|statement| statement.sql.as_str())
+                        .collect::<Vec<_>>(),
                     vec![
                         r#"ATTACH IF NOT EXISTS 'md:analytics' AS "analytics""#,
                         r#"SET "enable_progress_bar" = 'false'"#,
