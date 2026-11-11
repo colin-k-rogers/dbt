@@ -34,7 +34,7 @@ use chrono::DateTime;
 use dbt_adapter::Adapter;
 use dbt_adapter::LATEST_VERSION_POINTER_SUFFIX;
 use dbt_adapter::adapter::NodeOverride;
-use dbt_adapter::adapter::motherduck::{clear_staging, take_staging};
+use dbt_adapter::adapter::motherduck::clear_staging;
 use dbt_adapter::connection::drop_thread_local_connection;
 use dbt_adapter::relation::{RelationObject, do_create_relation};
 use dbt_adapter::response::AdapterResponse;
@@ -142,39 +142,9 @@ fn execute_materialization_macro(
         })
     });
     if result.is_err() {
-        drop_motherduck_staging_after_failure(&jinja_env, context);
+        crate::motherduck::drop_staging_after_failure(&jinja_env, context);
     }
     result
-}
-
-fn drop_motherduck_staging_after_failure(
-    jinja_env: &JinjaEnv,
-    context: &mut OverlayMap,
-) {
-    let Some((database, schema, identifier)) = take_staging() else {
-        return;
-    };
-    context.insert(
-        "__motherduck_staging_database".to_string(),
-        Value::from(database),
-    );
-    context.insert(
-        "__motherduck_staging_schema".to_string(),
-        Value::from(schema),
-    );
-    context.insert(
-        "__motherduck_staging_identifier".to_string(),
-        Value::from(identifier),
-    );
-    if let Err(error) = jinja_env.render_str(
-        "{{ motherduck__drop_staging_relation(__motherduck_staging_database, __motherduck_staging_schema, __motherduck_staging_identifier) }}",
-        context,
-        &[],
-    ) {
-        tracing::warn!(
-            "failed to drop MotherDuck staging relation after materialization error: {error}"
-        );
-    }
 }
 
 fn apply_node_overrides(
