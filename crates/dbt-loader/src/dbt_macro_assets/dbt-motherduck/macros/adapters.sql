@@ -86,7 +86,6 @@
   {%- endcall %}
 {% endmacro %}
 
-{# One begin/commit for the backup+promote pair. A single rename is not a swap. #}
 {% macro motherduck__relation_swap_sql(existing_relation, intermediate_relation, target_relation, backup_relation) -%}
   {% if existing_relation is not none %}
     {{ motherduck__rename_sql(existing_relation, backup_relation) }};
@@ -105,8 +104,8 @@
   {% endif %}
 {% endmacro %}
 
-{# Same shape as snowflake_dml_explicit_transaction. Inside-transaction hooks
-   live in this string: adapter.commit() does not keep a transaction open. #}
+{# One begin/commit for the DML, including a backup+promote swap. A single rename is not a swap.
+   Inside-transaction hooks live in this string: adapter.commit() does not keep a transaction open. #}
 {% macro motherduck_dml_explicit_transaction(dml) %}
   {% set wrapped %}
     begin;

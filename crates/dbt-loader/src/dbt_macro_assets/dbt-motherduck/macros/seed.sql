@@ -8,17 +8,11 @@
 {% endmacro %}
 
 {% macro motherduck__reset_csv_table(model, full_refresh, old_relation, agate_table) %}
-  {% if full_refresh %}
-    {{ adapter.drop_relation(old_relation) }}
-    {% set sql = create_csv_table(model, agate_table) %}
-  {% elif (agate_table.rows | length) == 0 %}
-    {{ adapter.truncate_relation(old_relation) }}
-    {% set sql = "truncate table " ~ old_relation.render() %}
-  {% else %}
-    {# Truncate runs in motherduck__load_csv_rows, in the same transaction as the inserts. #}
-    {% set sql = "" %}
+  {% if full_refresh or (agate_table.rows | length) == 0 %}
+    {{ return(default__reset_csv_table(model, full_refresh, old_relation, agate_table)) }}
   {% endif %}
-  {{ return(sql) }}
+  {# Truncate runs in motherduck__load_csv_rows, in the same transaction as the inserts. #}
+  {{ return('') }}
 {% endmacro %}
 
 {% macro motherduck__load_csv_rows(model, agate_table) %}
