@@ -1239,8 +1239,8 @@ impl AdapterImpl {
                 // See: https://github.com/dbt-labs/dbt-core/issues/14631
                 self.list_schemas_via_adbc(state, database)
             }
-            MotherDuck => metadata::motherduck::list_schemas(self, state, database),
-            Snowflake | Databricks | Redshift | Spark | DuckDB | Postgres | Salesforce | Fabric
+            Snowflake | Databricks | Redshift | Spark | DuckDB | MotherDuck | Postgres
+            | Salesforce | Fabric
             | ClickHouse | Exasol | Athena | Starburst | Trino | Datafusion | Dremio | Oracle
             | LakeCompute | Bigquery => {
                 use crate::macro_exec::execute_macro_wrapper;

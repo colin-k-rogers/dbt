@@ -1,10 +1,8 @@
-use std::sync::Arc;
-
 use arrow_array::{RecordBatch, StringArray};
 use dbt_adapter_core::AdapterType;
 use dbt_common::cancellation::CancellationToken;
 use dbt_adapter_engine::record_batch::RecordBatchExt;
-use dbt_schemas::schemas::common::{ResolvedQuoting, normalize_quote};
+use dbt_schemas::schemas::common::ResolvedQuoting;
 use dbt_schemas::schemas::relations::base::BaseRelation;
 use minijinja::State;
 
@@ -28,27 +26,6 @@ fn execute_sql(
         sql,
         CancellationToken::never_cancels(),
     )
-}
-
-pub(crate) fn list_schemas_sql(database: &str) -> String {
-    // filter_missing_schemas passes a quoted catalog; duckdb_schemas() stores the raw name.
-    let (database, _) = normalize_quote(false, AdapterType::MotherDuck, database);
-    let predicate = database_eq(&database);
-    let filter = if predicate.is_empty() {
-        String::new()
-    } else {
-        format!(" WHERE {predicate}")
-    };
-    format!("SELECT schema_name FROM duckdb_schemas(){filter}")
-}
-
-pub(crate) fn list_schemas(
-    adapter: &AdapterImpl,
-    state: &State,
-    database: &str,
-) -> AdapterResult<Vec<String>> {
-    let batch = execute_sql(adapter, state, "list_schemas", &list_schemas_sql(database))?;
-    adapter.list_schemas_inner(Arc::new(batch))
 }
 
 pub(crate) fn relation_columns(
