@@ -1,7 +1,0 @@
-kind: Fixes
-body: Name the catalog and driver error when a MotherDuck attach fails.
-time: 2026-11-05T13:54:31.187634-08:00
-custom:
-    author: colin-k-rogers
-    issue: "16817"
-    project: dbt-core
