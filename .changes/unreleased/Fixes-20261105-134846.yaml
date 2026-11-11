@@ -1,7 +1,0 @@
-kind: Fixes
-body: Treat MotherDuck like DuckDB for external sources and unit-test schema probes, and allow concurrent microbatch.
-time: 2026-11-05T13:48:46.324274-08:00
-custom:
-    author: colin-k-rogers
-    issue: "16817"
-    project: dbt-core

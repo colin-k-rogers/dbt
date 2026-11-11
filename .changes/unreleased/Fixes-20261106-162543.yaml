@@ -1,7 +1,0 @@
-kind: Fixes
-body: Share MotherDuck column construction and match adapter checks.
-time: 2026-11-06T16:25:43.647032-08:00
-custom:
-    author: colin-k-rogers
-    issue: "16817"
-    project: dbt-core
