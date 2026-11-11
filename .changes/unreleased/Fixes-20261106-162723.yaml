@@ -1,7 +1,0 @@
-kind: Fixes
-body: Make MotherDuck host and region one choice, and reject externalbrowser while parsing.
-time: 2026-11-06T16:27:23.606828-08:00
-custom:
-    author: colin-k-rogers
-    issue: "16817"
-    project: dbt-core

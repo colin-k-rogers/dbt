@@ -1,7 +1,0 @@
-kind: Fixes
-body: Reject a MotherDuck profile username, make sslrootcert optional, and add attach_mode.
-time: 2026-11-04T17:20:14.280709-08:00
-custom:
-    author: colin-k-rogers
-    issue: "16817"
-    project: dbt-core
