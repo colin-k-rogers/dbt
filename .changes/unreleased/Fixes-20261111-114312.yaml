@@ -1,0 +1,7 @@
+kind: Fixes
+body: Render MotherDuck lists and unsigned integers the same way as DuckDB.
+time: 2026-11-11T11:43:12.910769-08:00
+custom:
+    author: colin-k-rogers
+    issue: "16817"
+    project: dbt-core
