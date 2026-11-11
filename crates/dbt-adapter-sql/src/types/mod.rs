@@ -1142,7 +1142,7 @@ impl SqlType {
             | DataType::UInt16
             | DataType::UInt32
             | DataType::UInt64
-                if backend == AdapterType::DuckDB =>
+                if matches!(backend, AdapterType::DuckDB | AdapterType::MotherDuck) =>
             {
                 match data_type {
                     DataType::Int8 => SqlType::TinyInt,
@@ -1299,7 +1299,7 @@ impl SqlType {
             | DataType::LargeList(item)
             | DataType::ListView(item)
             | DataType::LargeListView(item)
-                if backend == AdapterType::DuckDB =>
+                if matches!(backend, AdapterType::DuckDB | AdapterType::MotherDuck) =>
             {
                 SqlType::Array(Some(Box::new(Self::from_arrow_type(
                     backend,
