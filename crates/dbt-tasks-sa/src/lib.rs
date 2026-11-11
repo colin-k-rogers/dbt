@@ -20,6 +20,7 @@ pub mod extract_sources;
 pub mod graph;
 pub mod materialize;
 pub mod microbatch;
+pub mod motherduck;
 pub mod register_seeds;
 pub mod renderable;
 pub mod run_adhoc;
