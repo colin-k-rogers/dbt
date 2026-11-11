@@ -70,11 +70,8 @@
 
 {% macro motherduck__drop_relation(relation) -%}
   {% call statement('drop_relation', auto_begin=False) -%}
-    {% if adapter.is_ducklake(relation) %}
-      drop {{ relation.type }} if exists {{ relation }}
-    {% else %}
-      drop {{ relation.type }} if exists {{ relation }} cascade
-    {% endif %}
+    drop {{ relation.type }} if exists {{ relation }}
+    {%- if not adapter.is_ducklake(relation) %} cascade{% endif %}
   {%- endcall %}
 {% endmacro %}
 
@@ -86,20 +83,20 @@
 {% endmacro %}
 
 {% macro get_column_names() %}
-    {%- set user_provided_columns = model['columns'] -%}
-    (
-    {% for i in user_provided_columns %}
-      {% set col = user_provided_columns[i] %}
-      {{ adapter.quote(col['name']) if col.get('quote') else col['name'] }} {{ "," if not loop.last }}
-    {% endfor %}
+  (
+  {{ default__get_column_names() }}
   )
 {% endmacro %}
 
 {% macro motherduck__list_schemas(database) -%}
+  {# filter_missing_schemas passes a quoted catalog; duckdb_schemas() stores the raw name. #}
+  {% if database is not none and database.startswith('"') and database.endswith('"') and database|length > 1 %}
+    {% set database = database[1:-1] %}
+  {% endif %}
   {% set sql %}
     select schema_name
     from duckdb_schemas()
-    {% if database is not none %}
+    {% if database %}
     where lower(database_name) = '{{ database | lower | replace("'", "''") }}'
     {% endif %}
   {% endset %}
