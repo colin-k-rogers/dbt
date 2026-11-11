@@ -149,7 +149,7 @@ fn execute_materialization_macro(
 
 fn drop_motherduck_staging_after_failure(
     jinja_env: &JinjaEnv,
-    context: &mut BTreeMap<String, Value>,
+    context: &mut OverlayMap,
 ) {
     let Some((database, schema, identifier)) = take_staging() else {
         return;
