@@ -28,7 +28,7 @@ impl ColumnBuilder {
             Databricks | Spark => Self::build_databricks(field, type_ops),
             Redshift => Ok(Self::build_redshift(field, type_ops)),
             Postgres | Salesforce => Self::build_postgres_like(field, type_ops),
-            DuckDB | LakeCompute => Self::build_duckdb(field, type_ops),
+            DuckDB | MotherDuck | LakeCompute => Self::build_duckdb(field, type_ops),
             Fabric => Ok(Self::build_fabric(field, type_ops)),
             ClickHouse => Self::build_clickhouse(field, type_ops),
             Exasol => Ok(Self::build_exasol(field, type_ops)),
@@ -60,16 +60,8 @@ impl ColumnBuilder {
                 numeric_precision,
                 numeric_scale,
             ),
-            DuckDB => Column::new_boxed(
-                DuckDB,
-                name,
-                dtype,
-                char_size,
-                numeric_precision,
-                numeric_scale,
-            ),
-            LakeCompute => Column::new_boxed(
-                LakeCompute,
+            DuckDB | MotherDuck | LakeCompute => Column::new_boxed(
+                self.adapter_type,
                 name,
                 dtype,
                 char_size,
