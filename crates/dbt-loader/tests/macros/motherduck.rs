@@ -141,25 +141,23 @@ fn list_relations_uses_duckdb_functions_and_escapes_quotes() {
 #[test]
 fn list_schemas_strips_a_quoted_catalog() {
     let harness = harness();
+    let ctx = harness.materialization_context("orders", "").build();
     harness
-        .render(
-            r#"{{ motherduck__list_schemas('"my_db"') }}"#,
-            BTreeMap::<String, Value>::new(),
-        )
+        .render(r#"{{ motherduck__list_schemas('"my_db"') }}"#, ctx.clone())
         .expect("list_schemas should render");
     let sql = executed_sql(harness.mock()).join("\n");
     assert!(sql.contains("duckdb_schemas()"), "{sql}");
-    assert!(sql.contains("lower('my_db')"), "{sql}");
-    assert!(!sql.contains(r#"lower('"my_db"')"#), "{sql}");
+    assert!(sql.contains("= 'my_db'"), "{sql}");
+    assert!(!sql.contains("\"my_db\""), "{sql}");
 
     harness
         .render(
             r#"{{ motherduck__list_schemas('"team' ~ "'" ~ 's data"') }}"#,
-            BTreeMap::<String, Value>::new(),
+            ctx,
         )
         .expect("quoted catalog with an apostrophe should render");
     let sql = executed_sql(harness.mock()).join("\n");
-    assert!(sql.contains("lower('team''s data')"), "{sql}");
+    assert!(sql.contains("= 'team''s data'"), "{sql}");
 }
 
 #[test]
