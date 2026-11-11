@@ -1262,12 +1262,11 @@ impl BaseRelation for Relation {
     }
 
     fn render_self_as_str(&self) -> String {
-        if matches!(
-            self.adapter_type,
-            AdapterType::DuckDB | AdapterType::MotherDuck
-        ) && let Some(external) = &self.external
-        {
-            return external.clone();
+        match (&self.adapter_type, &self.external) {
+            (AdapterType::DuckDB | AdapterType::MotherDuck, Some(external)) => {
+                return external.clone();
+            }
+            _ => {}
         }
 
         // Render BigQuery INFORMATION_SCHEMA view names using proper qualifiers

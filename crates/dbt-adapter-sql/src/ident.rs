@@ -457,25 +457,16 @@ mod sanitize_tests {
     }
 
     #[test]
-    fn duckdb_sanitize_strips_sql_metacharacters() {
-        let s = |n: &str| sanitize_identifier(n, AdapterType::DuckDB);
-        assert_eq!(s("foo\";DROP TABLE bar;--"), "fooDROPTABLEbar");
-        assert_eq!(s("my.catalog.name"), "mycatalogname");
-        assert_eq!(s("'); DROP"), "DROP");
-        assert_eq!(s("a b\tc\n"), "abc");
-        assert_eq!(s("under_score123"), "under_score123");
-        // Multi-byte Unicode is dropped entirely (no stray continuation bytes).
-        assert_eq!(s("café—x"), "cafx");
-    }
-
-    #[test]
-    fn motherduck_sanitize_strips_sql_metacharacters() {
-        let s = |n: &str| sanitize_identifier(n, AdapterType::MotherDuck);
-        assert_eq!(s("foo\";DROP TABLE bar;--"), "fooDROPTABLEbar");
-        assert_eq!(s("my.catalog.name"), "mycatalogname");
-        assert_eq!(s("'); DROP"), "DROP");
-        assert_eq!(s("a b\tc\n"), "abc");
-        assert_eq!(s("under_score123"), "under_score123");
-        assert_eq!(s("café—x"), "cafx");
+    fn duckdb_and_motherduck_sanitize_strips_sql_metacharacters() {
+        for adapter_type in [AdapterType::DuckDB, AdapterType::MotherDuck] {
+            let s = |n: &str| sanitize_identifier(n, adapter_type);
+            assert_eq!(s("foo\";DROP TABLE bar;--"), "fooDROPTABLEbar");
+            assert_eq!(s("my.catalog.name"), "mycatalogname");
+            assert_eq!(s("'); DROP"), "DROP");
+            assert_eq!(s("a b\tc\n"), "abc");
+            assert_eq!(s("under_score123"), "under_score123");
+            // Multi-byte Unicode is dropped entirely (no stray continuation bytes).
+            assert_eq!(s("café—x"), "cafx");
+        }
     }
 }

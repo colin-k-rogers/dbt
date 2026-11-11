@@ -614,14 +614,17 @@ pub fn create_relation_from_source(
         .clone()
         .unwrap_or(database);
 
-    if matches!(adapter_type, AdapterType::DuckDB | AdapterType::MotherDuck)
-        && let Some(external) = duckdb_external_location_for_source(source)?
-    {
-        return Ok(Box::new(
-            Relation::new(adapter_type, database, schema, identifier)
-                .with_quoting(custom_quoting)
-                .with_external(external),
-        ));
+    match adapter_type {
+        AdapterType::DuckDB | AdapterType::MotherDuck => {
+            if let Some(external) = duckdb_external_location_for_source(source)? {
+                return Ok(Box::new(
+                    Relation::new(adapter_type, database, schema, identifier)
+                        .with_quoting(custom_quoting)
+                        .with_external(external),
+                ));
+            }
+        }
+        _ => {}
     }
 
     create_relation(
