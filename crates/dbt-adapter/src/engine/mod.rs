@@ -25,6 +25,7 @@ pub use adbc::AdbcEngine;
 pub(crate) use adbc::resolve_connection_config;
 
 mod motherduck;
+pub(crate) use motherduck::settings_sql;
 
 mod record_replay;
 pub use record_replay::RecordReplayEngine;
