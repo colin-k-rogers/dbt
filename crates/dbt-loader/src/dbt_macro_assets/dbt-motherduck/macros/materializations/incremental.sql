@@ -32,11 +32,13 @@
   {% set temp_relation = staged.relation %}
   {% do adapter.commit() %}
   {{ run_hooks(pre_hooks, inside_transaction=False) }}
-  {{ run_hooks(pre_hooks, inside_transaction=True) }}
 
+  {% set txn = namespace(explicit=false) %}
   {% if existing_relation is none %}
+    {{ run_hooks(pre_hooks, inside_transaction=True) }}
     {% set build_sql = create_table_as(false, target_relation, sql, partitioned_by=partitioned_by, sorted_by=sorted_by) %}
   {% elif full_refresh_mode %}
+    {% set txn.explicit = true %}
     {% set build_sql = create_table_as(false, intermediate_relation, sql, partitioned_by=partitioned_by, sorted_by=sorted_by) %}
   {% else %}
     {# shortcut: setup pre-creates dbt_temp only; a custom meta.temp_schema_name can still race on first create #}
@@ -48,13 +50,14 @@
     {% if not dest_columns %}
       {% set dest_columns = adapter.get_columns_in_relation(existing_relation) %}
     {% endif %}
-    {% set build_sql = strategy_macro({
+    {% set build_sql = motherduck_dml_explicit_transaction(strategy_macro({
         'target_relation': target_relation,
         'temp_relation': temp_relation,
         'unique_key': config.get('unique_key'),
         'dest_columns': dest_columns,
         'incremental_predicates': config.get('predicates') or config.get('incremental_predicates')
-    }) %}
+    })) %}
+    {% set txn.explicit = true %}
   {% endif %}
 
   {% call statement('main') %}
@@ -62,8 +65,10 @@
   {% endcall %}
   {% if existing_relation and full_refresh_mode %}
     {% do drop_indexes_on_relation(target_relation) %}
-    {% do adapter.rename_relation(target_relation, backup_relation) %}
-    {% do adapter.rename_relation(intermediate_relation, target_relation) %}
+    {% call statement('rename_swap') %}
+      {{ motherduck_dml_explicit_transaction(motherduck__relation_swap_sql(target_relation, intermediate_relation, target_relation, backup_relation)) }}
+    {% endcall %}
+    {% set txn.explicit = true %}
     {% do to_drop.append(backup_relation) %}
   {% endif %}
   {% do apply_grants(target_relation, grant_config, should_revoke=should_revoke(existing_relation, full_refresh_mode)) %}
@@ -71,7 +76,9 @@
     {% do create_indexes(target_relation) %}
   {% endif %}
   {% do persist_docs(target_relation, model) %}
-  {{ run_hooks(post_hooks, inside_transaction=True) }}
+  {% if not txn.explicit %}
+    {{ run_hooks(post_hooks, inside_transaction=True) }}
+  {% endif %}
   {% do adapter.commit() %}
   {% for relation in to_drop %}
     {% do adapter.drop_relation(relation) %}
