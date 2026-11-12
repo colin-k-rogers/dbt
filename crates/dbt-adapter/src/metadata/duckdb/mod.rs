@@ -21,7 +21,7 @@ use dbt_common::cancellation::Cancellable;
 use dbt_common::cancellation::CancellationToken;
 use dbt_schemas::dbt_types::RelationType;
 use dbt_schemas::schemas::dbt_catalogs::{
-    CatalogSpecView, DbtCatalogsView, PhysicalFormatResolver,
+    CatalogSpecView, CatalogType, DbtCatalogsView, PhysicalFormatResolver,
 };
 use dbt_schemas::schemas::{
     common::ResolvedQuoting,
@@ -488,12 +488,28 @@ impl CatalogsViewDuckDbExt for DbtCatalogsView<'_> {
     }
 
     fn table_format_for_database(&self, database: &str) -> Option<&'static str> {
+        if database.is_empty() {
+            return None;
+        }
         self.catalogs.iter().find_map(|catalog| {
-            let alias = catalog.resolved_attach_alias()?;
-            if !alias.eq_ignore_ascii_case(database) {
+            if catalog
+                .resolved_attach_alias()
+                .is_some_and(|alias| alias.eq_ignore_ascii_case(database))
+            {
+                return Some(catalog.physical_table_format().as_str());
+            }
+            // Existing relations report the account database, not the attach alias.
+            if catalog.catalog_type != CatalogType::DuckLake {
                 return None;
             }
-            Some(catalog.physical_table_format().as_str())
+            let Ok((account, _)) =
+                crate::catalog_relation::motherduck_ducklake_attach_names(catalog)
+            else {
+                return None;
+            };
+            account
+                .eq_ignore_ascii_case(database)
+                .then_some(catalog.physical_table_format().as_str())
         })
     }
 }
@@ -1048,9 +1064,39 @@ catalogs:
 "#,
             |view| {
                 assert_eq!(view.table_format_for_database("lake"), Some("ducklake"));
+                assert_eq!(view.table_format_for_database("meta.ducklake"), None);
                 assert_eq!(view.table_format_for_database("rest"), Some("iceberg"));
                 assert_eq!(view.table_format_for_database("remote_db"), Some("default"));
                 assert_eq!(view.table_format_for_database("missing"), None);
+            },
+        );
+    }
+
+    #[test]
+    fn table_format_for_database_resolves_motherduck_ducklake_account_names() {
+        with_view(
+            r#"
+catalogs:
+  - name: hot_dog_lake
+    type: ducklake
+    table_format: default
+    config:
+      duckdb:
+        metadata_path: "md:dbt_fusion_hot_dog_lake"
+"#,
+            |view| {
+                assert_eq!(
+                    view.table_format_for_database("hot_dog_lake"),
+                    Some("ducklake")
+                );
+                assert_eq!(
+                    view.table_format_for_database("dbt_fusion_hot_dog_lake"),
+                    Some("ducklake")
+                );
+                assert_eq!(
+                    view.table_format_for_database("md:dbt_fusion_hot_dog_lake"),
+                    None
+                );
             },
         );
     }
