@@ -48,6 +48,7 @@ use crate::run_operation::run_operation_on_run_with_ctx;
 use crate::task::effective_unit_test_execute;
 use crate::utils::filter_missing_schemas;
 use crate::utils::get_catalog_schemas_and_ids_by_adapter;
+use crate::utils::include_motherduck_temp_schema;
 use crate::utils::register_catalog_schemas_remote;
 use crate::visitor::visit_parallel;
 use crate::visitor::visit_sequential;
@@ -274,7 +275,8 @@ impl TaskRunner {
             self.adapter.adapter_type(),
         );
         // One adapter at a time, so a recorded run keeps its order.
-        for (adapter_type, selected_catalog_schemas) in groups {
+        for (adapter_type, mut selected_catalog_schemas) in groups {
+            include_motherduck_temp_schema(adapter_type, &mut selected_catalog_schemas);
             let adapter = ctx.adapter_store().get(adapter_type)?;
             // TODO: copies the base context per adapter, and `register_adapter_schemas` copies
             // it per schema. Layer over the shared base once `new_state_with_context` takes an
