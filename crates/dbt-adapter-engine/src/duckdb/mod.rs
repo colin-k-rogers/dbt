@@ -32,7 +32,8 @@ pub fn duckdb_attaches_via(catalog_type: CatalogType) -> Option<DuckDbAttachKind
         | CatalogType::SnowflakeNative
         | CatalogType::BigqueryNative
         | CatalogType::DuckdbNative
-        | CatalogType::SparkNative => None,
+        | CatalogType::SparkNative
+        | CatalogType::MotherDuck => None,
     }
 }
 

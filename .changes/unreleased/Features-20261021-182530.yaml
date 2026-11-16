@@ -1,0 +1,7 @@
+kind: Features
+body: Add native MotherDuck catalogs.yml schema and model routing.
+time: 2026-10-21T18:25:30.185616-07:00
+custom:
+    author: colin-k-rogers
+    issue: "16817"
+    project: dbt-core
