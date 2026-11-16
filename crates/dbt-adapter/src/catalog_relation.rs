@@ -1256,6 +1256,9 @@ fn from_model_config_and_catalogs_default(
         (AdapterType::MotherDuck, CatalogType::MotherDuck) => {
             CatalogRelation::build_motherduck_with_catalogs(catalog, &catalog_name)
         }
+        (AdapterType::MotherDuck, CatalogType::DuckLake) => {
+            CatalogRelation::build_motherduck_ducklake_with_catalogs(catalog, &catalog_name)
+        }
         // Horizon/Unity are Iceberg REST under the hood; with duckdb 1.5.4's
         // write-compat ATTACH options they are writable, so models may target
         // them and they build the same relation as a generic Iceberg REST
@@ -1339,7 +1342,7 @@ fn from_model_config_and_catalogs_default(
         (AdapterType::MotherDuck, other) => Err(AdapterError::new(
             AdapterErrorKind::Configuration,
             format!(
-                "Catalog '{catalog_name}' has type '{}'; MotherDuck v2 mapping supports only 'motherduck'",
+                "Catalog '{catalog_name}' has type '{}'; MotherDuck v2 mapping supports only 'motherduck' and 'ducklake'",
                 other.as_str()
             ),
         )),
@@ -1509,6 +1512,76 @@ pub(crate) fn motherduck_attach_names(
     Ok((database.to_string(), alias.to_string()))
 }
 
+/// `(account database, attach alias)` for a `type: ducklake` catalog on MotherDuck.
+///
+/// `metadata_path` is the MotherDuck database name (`md:` optional). Local DuckLake
+/// file options are rejected: this path attaches an existing account database.
+pub(crate) fn motherduck_ducklake_attach_names(
+    catalog: &CatalogSpecView<'_>,
+) -> AdapterResult<(String, String)> {
+    let duckdb = require_platform_block(catalog, catalog.name, "duckdb")?;
+    for key in [
+        "data_path",
+        "metadata_schema",
+        "metadata_catalog",
+        "data_inlining_row_limit",
+        "create_if_not_exists",
+        "read_only",
+        "encrypted",
+        "automatic_migration",
+        "override_data_path",
+    ] {
+        if duckdb.get(yml::Value::from(key)).is_some() {
+            return Err(AdapterError::new(
+                AdapterErrorKind::Configuration,
+                format!(
+                    "Catalog '{}' is a MotherDuck DuckLake database. '{key}' applies to a local DuckLake file and is not supported; set metadata_path to the account database name",
+                    catalog.name
+                ),
+            ));
+        }
+    }
+
+    let metadata_path = get_yaml_str(duckdb, "metadata_path").ok_or_else(|| {
+        AdapterError::new(
+            AdapterErrorKind::Configuration,
+            format!(
+                "Catalog '{}' duckdb config requires 'metadata_path'",
+                catalog.name
+            ),
+        )
+    })?;
+    let database = metadata_path.strip_prefix("md:").unwrap_or(metadata_path);
+    if database.is_empty()
+        || database.contains('/')
+        || database.contains('\\')
+        || database.contains(':')
+        || database.to_ascii_lowercase().ends_with(".ducklake")
+    {
+        return Err(AdapterError::new(
+            AdapterErrorKind::Configuration,
+            format!(
+                "Catalog '{}' metadata_path '{metadata_path}' must be a MotherDuck database name, not a local DuckLake file",
+                catalog.name
+            ),
+        ));
+    }
+
+    let alias = catalog
+        .resolved_attach_alias()
+        .filter(|alias| !alias.is_empty())
+        .ok_or_else(|| {
+            AdapterError::new(
+                AdapterErrorKind::Configuration,
+                format!(
+                    "Catalog '{}' DuckLake attach alias is empty after sanitization",
+                    catalog.name
+                ),
+            )
+        })?;
+    Ok((database.to_string(), alias))
+}
+
 impl CatalogRelation {
     fn build_spark_with_catalogs(
         catalog: &CatalogSpecView<'_>,
@@ -1554,6 +1627,33 @@ impl CatalogRelation {
             file_format: None,
             external_volume: None,
             catalog_database: Some(catalog_database),
+            lakehouse_catalog: None,
+            base_location: None,
+            adapter_properties,
+            is_transient: None,
+        })
+    }
+
+    fn build_motherduck_ducklake_with_catalogs(
+        catalog: &CatalogSpecView<'_>,
+        catalog_name: &str,
+    ) -> AdapterResult<CatalogRelation> {
+        let (database, alias) = motherduck_ducklake_attach_names(catalog)?;
+
+        let mut adapter_properties = BTreeMap::new();
+        adapter_properties.insert("database".to_string(), database.clone());
+        adapter_properties.insert("metadata_path".to_string(), database);
+        adapter_properties.insert("attached_database".to_string(), alias.clone());
+
+        Ok(CatalogRelation {
+            adapter_type: AdapterType::MotherDuck,
+            catalog_name: Some(catalog_name.to_string()),
+            integration_name: None,
+            catalog_type: CatalogType::DuckLake,
+            table_format: catalog.table_format,
+            file_format: None,
+            external_volume: None,
+            catalog_database: Some(alias),
             lakehouse_catalog: None,
             base_location: None,
             adapter_properties,
@@ -3549,9 +3649,98 @@ catalogs:
         assert!(
             error
                 .to_string()
-                .contains("MotherDuck v2 mapping supports only 'motherduck'"),
+                .contains("MotherDuck v2 mapping supports only 'motherduck' and 'ducklake'"),
             "unexpected error: {error}"
         );
+    }
+
+    #[test]
+    fn motherduck_ducklake_attaches_the_account_database_under_the_catalog_alias() {
+        let catalogs = load_catalogs_yaml(
+            r#"
+catalogs:
+  - name: hot_dog_lake
+    type: ducklake
+    table_format: default
+    config:
+      duckdb:
+        metadata_path: "md:dbt_md_lake"
+        catalog_database: routed_lake
+"#,
+        );
+        let m = model(
+            AdapterType::MotherDuck,
+            json!({ "catalog_name": "hot_dog_lake" }),
+        );
+
+        let relation =
+            from_model_config_and_catalogs_default(AdapterType::MotherDuck, &m, Arc::new(catalogs))
+                .unwrap();
+
+        assert_eq!(relation.adapter_type, AdapterType::MotherDuck);
+        assert_eq!(relation.catalog_type, CatalogType::DuckLake);
+        assert_eq!(relation.catalog_database.as_deref(), Some("routed_lake"));
+        assert_eq!(
+            relation
+                .adapter_properties
+                .get("database")
+                .map(String::as_str),
+            Some("dbt_md_lake")
+        );
+        assert_eq!(
+            relation
+                .adapter_properties
+                .get("attached_database")
+                .map(String::as_str),
+            Some("routed_lake")
+        );
+    }
+
+    #[test]
+    fn motherduck_ducklake_rejects_local_file_options_and_paths() {
+        let file_catalogs = load_catalogs_yaml(
+            r#"
+catalogs:
+  - name: hot_dog_lake
+    type: ducklake
+    table_format: default
+    config:
+      duckdb:
+        metadata_path: "metadata.ducklake"
+"#,
+        );
+        let m = model(
+            AdapterType::MotherDuck,
+            json!({ "catalog_name": "hot_dog_lake" }),
+        );
+        let error = from_model_config_and_catalogs_default(
+            AdapterType::MotherDuck,
+            &m,
+            Arc::new(file_catalogs),
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), AdapterErrorKind::Configuration);
+        assert!(error.to_string().contains("not a local DuckLake file"));
+
+        let data_path_catalogs = load_catalogs_yaml(
+            r#"
+catalogs:
+  - name: hot_dog_lake
+    type: ducklake
+    table_format: default
+    config:
+      duckdb:
+        metadata_path: dbt_md_lake
+        data_path: "s3://bucket/data/"
+"#,
+        );
+        let error = from_model_config_and_catalogs_default(
+            AdapterType::MotherDuck,
+            &m,
+            Arc::new(data_path_catalogs),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("data_path"));
     }
 
     #[test]

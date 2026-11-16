@@ -670,18 +670,16 @@ impl AdapterImpl {
     /// Mirrors the Python reference implementation in dbt-duckdb:
     /// https://github.com/duckdb/dbt-duckdb/blob/main/dbt/adapters/duckdb/credentials.py
     pub fn table_format_for_database(&self, database: &str) -> &'static str {
-        // DIVERGENCE: the lake compute arm has no Python counterpart -- lake compute
-        // is Fusion-only, and it shares the DuckDB macros this feeds.
-        //
-        // Lake compute reads and writes open Iceberg tables, and it attaches the
-        // catalogs holding them server-side -- so there is no profile `attach:`
-        // entry and, in the Lake Compute + MDLS setup, no catalogs.yml entry for
-        // the DuckDB lookups below to find.
-        if self.adapter_type() == LakeCompute {
-            return duckdb_table_format_for_database(database).unwrap_or("iceberg");
-        }
-        if self.adapter_type() != DuckDB {
-            return "default";
+        // Lake compute attaches Iceberg server-side and has no catalogs.yml entry,
+        // so a miss is iceberg. MotherDuck ducklake comes from catalogs.yml.
+        let format_fallback = match self.adapter_type() {
+            LakeCompute => Some("iceberg"),
+            MotherDuck => Some("default"),
+            DuckDB => None,
+            _ => return "default",
+        };
+        if let Some(fallback) = format_fallback {
+            return duckdb_table_format_for_database(database).unwrap_or(fallback);
         }
 
         let path_config = self.get_db_config("path");
