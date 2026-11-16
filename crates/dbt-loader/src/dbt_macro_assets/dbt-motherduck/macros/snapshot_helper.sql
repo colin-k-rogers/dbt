@@ -1,0 +1,44 @@
+{# Adapted from dbt-duckdb commit acdab5dfc85715572bbf43fcf2b318a5ed1bfa16,
+   dbt/include/duckdb/macros/snapshot_helper.sql. #}
+{% macro motherduck__snapshot_merge_sql(target, source, insert_cols) -%}
+    {%- set insert_cols_csv = insert_cols | join(', ') -%}
+
+    {%- set columns = config.get("snapshot_table_column_names") or get_snapshot_table_column_names() -%}
+
+    update {{ target }} as DBT_INTERNAL_TARGET
+    set {{ columns.dbt_valid_to }} = DBT_INTERNAL_SOURCE.{{ columns.dbt_valid_to }}
+    from {{ source }} as DBT_INTERNAL_SOURCE
+    where DBT_INTERNAL_SOURCE.{{ columns.dbt_scd_id }}::text = DBT_INTERNAL_TARGET.{{ columns.dbt_scd_id }}::text
+      and DBT_INTERNAL_SOURCE.dbt_change_type::text in ('update'::text, 'delete'::text)
+      {% if config.get("dbt_valid_to_current") %}
+        and (DBT_INTERNAL_TARGET.{{ columns.dbt_valid_to }} = {{ config.get('dbt_valid_to_current') }} or DBT_INTERNAL_TARGET.{{ columns.dbt_valid_to }} is null);
+      {% else %}
+        and DBT_INTERNAL_TARGET.{{ columns.dbt_valid_to }} is null;
+      {% endif %}
+
+    insert into {{ target }} ({{ insert_cols_csv }})
+    select {% for column in insert_cols -%}
+        DBT_INTERNAL_SOURCE.{{ column }} {%- if not loop.last %}, {%- endif %}
+    {%- endfor %}
+    from {{ source }} as DBT_INTERNAL_SOURCE
+    where DBT_INTERNAL_SOURCE.dbt_change_type::text = 'insert'::text;
+
+{% endmacro %}
+
+{% macro build_snapshot_staging_table(strategy, sql, target_relation) %}
+    {% set temporary_relation = motherduck__dispatch_temporary_relation(target_relation) %}
+    {% set temp_relation = temporary_relation.relation %}
+    {% set temporary = temporary_relation.temporary %}
+
+    {% set select = snapshot_staging_table(strategy, sql, target_relation) %}
+
+    {% call statement('build_snapshot_staging_relation') %}
+        {{ create_table_as(temporary, temp_relation, select) }}
+    {% endcall %}
+
+    {% do return(temp_relation) %}
+{% endmacro %}
+
+{% macro motherduck__post_snapshot(temporary_relation) %}
+    {% do return(drop_relation(temporary_relation)) %}
+{% endmacro %}
