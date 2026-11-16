@@ -42,33 +42,32 @@ impl MotherDuckAuthIR<'_> {
                 session_name,
                 attach_mode,
             } => {
-                let (mut uri, region) = endpoint_uri(&location, port, database)?;
-                {
-                    let mut query = uri.query_pairs_mut();
-                    query
-                        .append_pair("sslmode", "verify-full")
-                        .append_pair("connect_timeout", &connect_timeout);
-                    if let Some(sslrootcert) = sslrootcert {
-                        query.append_pair("sslrootcert", sslrootcert);
-                    }
-                    // A hostless URL cannot carry a port in its authority.
-                    if region.is_some() {
-                        query.append_pair("port", &port.to_string());
-                    }
-                }
+                let (uri, region) = endpoint_uri(&location, port, database)?;
 
                 // Token is the password option, not a URI query value.
                 // https://github.com/adbc-drivers/motherduck/pull/36
+                // The driver accepts only motherduck:// and motherduck.* options.
+                // https://github.com/adbc-drivers/motherduck/pull/93
                 builder.with_uri(uri);
                 if let Some(token) = token {
                     builder.with_password(token);
                 }
                 builder.with_named_option(dbt_adbc::motherduck::ATTACH_MODE, attach_mode)?;
+                builder.with_named_option(
+                    dbt_adbc::motherduck::CONNECT_TIMEOUT,
+                    connect_timeout.as_ref(),
+                )?;
                 if let Some(region) = region {
                     builder.with_named_option(dbt_adbc::motherduck::REGION, region)?;
                 }
                 if let Some(session_name) = session_name {
                     builder.with_named_option(dbt_adbc::motherduck::SESSION_NAME, session_name)?;
+                }
+                if let Some(sslrootcert) = sslrootcert {
+                    builder.with_named_option(
+                        dbt_adbc::motherduck::TLS_ROOT_CERT_PATH,
+                        sslrootcert,
+                    )?;
                 }
             }
         }
@@ -94,8 +93,8 @@ fn endpoint_uri<'a>(
 ) -> Result<(Url, Option<&'a str>), AuthError> {
     let (mut uri, region) = match location {
         MotherDuckLocation::Host(host) => {
-            let mut uri = Url::parse("postgresql://localhost")
-                .expect("the static MotherDuck PostgreSQL URL is valid");
+            let mut uri = Url::parse("motherduck://localhost")
+                .expect("the static MotherDuck URL is valid");
             uri.set_host(Some(host))
                 .map_err(|_| AuthError::config("host is not a valid hostname"))?;
             uri.set_port(Some(port))
@@ -103,8 +102,8 @@ fn endpoint_uri<'a>(
             (uri, None)
         }
         MotherDuckLocation::Region(region) => (
-            Url::parse("postgresql:///")
-                .expect("the static MotherDuck PostgreSQL URL is valid"),
+            Url::parse("motherduck:///")
+                .expect("the static MotherDuck URL is valid"),
             Some(*region),
         ),
     };
@@ -190,6 +189,13 @@ fn parse_auth<'a>(
         .ok()
         .filter(|port| *port > 0)
         .ok_or_else(|| AuthError::config("port must be between 1 and 65535"))?;
+    // The driver reads a custom port only from the URI authority, which a
+    // region connection does not have. It uses 5432 for a region.
+    if matches!(location, MotherDuckLocation::Region(_)) && port != 5432 {
+        return Err(AuthError::config(
+            "a custom port needs host; a region connection uses port 5432",
+        ));
+    }
 
     let connect_timeout = config
         .get_string("connect_timeout")
@@ -305,14 +311,19 @@ mod tests {
         assert_eq!(builder.password.as_deref(), Some("secret/token"));
         assert_contains!(
             &uri,
-            "postgresql://pg.us-east-1-aws.motherduck.com:5432/analytics?"
+            "motherduck://pg.us-east-1-aws.motherduck.com:5432/analytics"
         );
-        assert_contains!(&uri, "sslmode=verify-full");
+        assert!(!uri.contains('?'));
+        assert!(!uri.contains("sslmode="));
         assert!(!uri.contains("sslrootcert="));
-        assert_contains!(&uri, "connect_timeout=240");
         assert!(!uri.contains("user="));
         assert!(!uri.contains("password"));
         assert!(!uri.contains("options="));
+        assert!(named_option(
+            &builder,
+            dbt_adbc::motherduck::CONNECT_TIMEOUT,
+            "240"
+        ));
         assert!(named_option(
             &builder,
             dbt_adbc::motherduck::ATTACH_MODE,
@@ -333,8 +344,8 @@ mod tests {
             .expect("configure");
         let uri = uri_value(&builder);
 
-        assert_contains!(&uri, "postgresql:///analytics?");
-        assert_contains!(&uri, "port=5432");
+        assert_contains!(&uri, "motherduck:///analytics");
+        assert!(!uri.contains('?'));
         assert!(!uri.contains("pg.us-east-1-aws.motherduck.com"));
         assert_eq!(builder.username, None);
         assert!(named_option(
@@ -347,6 +358,18 @@ mod tests {
             dbt_adbc::motherduck::SESSION_NAME,
             "dbt-writer"
         ));
+
+        let mut mapping = config().repr().clone();
+        mapping.remove("host");
+        mapping.insert("region".into(), "us-east-1".into());
+        mapping.insert("port".into(), 6543.into());
+        let err = MotherDuckAuth::new(Box::new(crate::NoopAuthWarningPrinter))
+            .configure(&AdapterConfig::new(mapping))
+            .expect_err("region cannot carry a custom port");
+        assert_eq!(
+            err.msg(),
+            "a custom port needs host; a region connection uses port 5432"
+        );
     }
 
     #[test]
@@ -415,8 +438,13 @@ mod tests {
                 .configure(&AdapterConfig::new(mapping))
                 .expect("configure");
             let uri = uri_value(&builder);
-            assert_contains!(&uri, ":6543/analytics?");
-            assert_contains!(&uri, "connect_timeout=30");
+            assert_contains!(&uri, "motherduck://pg.us-east-1-aws.motherduck.com:6543/analytics");
+            assert!(!uri.contains('?'));
+            assert!(named_option(
+                &builder,
+                dbt_adbc::motherduck::CONNECT_TIMEOUT,
+                "30"
+            ));
         }
     }
 
@@ -511,7 +539,12 @@ mod tests {
         let builder = MotherDuckAuth::new(Box::new(crate::NoopAuthWarningPrinter))
             .configure(&AdapterConfig::new(mapping))
             .expect("sslrootcert");
-        assert_contains!(&uri_value(&builder), "sslrootcert=%2Fcerts%2Froot.crt");
+        assert!(named_option(
+            &builder,
+            dbt_adbc::motherduck::TLS_ROOT_CERT_PATH,
+            "/certs/root.crt"
+        ));
+        assert!(!uri_value(&builder).contains("sslrootcert"));
     }
 
     #[test]

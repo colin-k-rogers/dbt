@@ -1008,7 +1008,7 @@ pub struct MotherDuckDbConfig {
     /// database in the account. Default `single`.
     #[serde(default = "default_motherduck_attach_mode")]
     pub attach_mode: Option<String>,
-    /// Passed to the driver as `adbc.motherduck.session_name`.
+    /// Passed to the driver as `motherduck.session_name`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session_name: Option<String>,
 }
