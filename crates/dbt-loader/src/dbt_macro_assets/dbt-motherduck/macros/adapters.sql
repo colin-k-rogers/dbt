@@ -260,10 +260,22 @@
   {% do return(get_incremental_delete_insert_sql(arg_dict)) %}
 {% endmacro %}
 
+{% macro motherduck__temp_schema() %}
+  {%- set name = config.get('meta', {}).get('temp_schema_name', none) -%}
+  {{ return(name if name is string and name else 'dbt_temp') }}
+{% endmacro %}
+
 {% macro motherduck__dispatch_temporary_relation(target_relation, batch_id='') %}
-  {# shortcut: temp schema is always dbt_temp, honor meta.temp_schema_name when the adapter path does #}
-  {% set relation = target_relation.incorporate(path=adapter.get_temp_relation_path(target_relation, batch_id=batch_id)) %}
+  {% set temp_schema = motherduck__temp_schema() %}
+  {% set relation = target_relation.incorporate(path=adapter.get_temp_relation_path(target_relation, batch_id=batch_id, temp_schema=temp_schema)) %}
   {{ return({'relation': relation, 'temporary': false}) }}
+{% endmacro %}
+
+{% macro motherduck__drop_staging_relation(database, schema, identifier) %}
+  {% if database and schema and identifier %}
+    {% set relation = api.Relation.create(database=database, schema=schema, identifier=identifier, type='table') %}
+    {% do adapter.drop_relation(relation) %}
+  {% endif %}
 {% endmacro %}
 
 {% macro motherduck__current_timestamp() -%}

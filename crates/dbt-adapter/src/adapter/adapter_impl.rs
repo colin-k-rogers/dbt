@@ -2033,20 +2033,27 @@ impl AdapterImpl {
     }
 
     /// Returns a dict with database/schema/identifier for temp tables on MotherDuck.
+    ///
+    /// The identifier is `{model}__{run_suffix}` or `{model}__{run_suffix}__{batch}`
+    /// so a failed run cannot leave a name the next run tries to create.
+    /// `temp_schema` empty means `dbt_temp`. `meta.temp_schema_name` is passed
+    /// by the MotherDuck macros.
     pub fn get_temp_relation_path(
         &self,
         database: &str,
         identifier: &str,
         batch_id: &str,
+        temp_schema: &str,
     ) -> AdapterResult<BTreeMap<String, Value>> {
-        let mut path = BTreeMap::new();
-        path.insert("database".to_owned(), Value::from(database));
-        path.insert("schema".to_owned(), Value::from("dbt_temp"));
-        path.insert(
-            "identifier".to_owned(),
-            Value::from(format!("{identifier}__{batch_id}")),
-        );
-        Ok(path)
+        match self.adapter_type() {
+            AdapterType::MotherDuck => Ok(super::motherduck::temp_relation_path(
+                database,
+                identifier,
+                batch_id,
+                temp_schema,
+            )),
+            other => unimplemented!("get_temp_relation_path unimplemented for {other}"),
+        }
     }
 
     /// Rename relation
