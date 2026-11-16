@@ -1,0 +1,7 @@
+kind: Fixes
+body: Run MotherDuck incremental, snapshot, seed, and swap DDL in one transaction.
+time: 2026-11-05T14:11:53.212077-08:00
+custom:
+    author: colin-k-rogers
+    issue: "16817"
+    project: dbt-core
