@@ -1,0 +1,7 @@
+kind: Features
+body: Add MotherDuck profile and endpoint authentication support.
+time: 2026-10-21T17:51:49.512565-07:00
+custom:
+    author: colin-k-rogers
+    issue: "16817"
+    project: dbt-core
