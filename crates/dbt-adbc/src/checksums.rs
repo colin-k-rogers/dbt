@@ -1994,6 +1994,26 @@ pub static SORTED_CDN_DRIVER_CHECKSUMS: &[(
         "bba5fa811de3280055c79cd15f58f558771c74bdb285a8d7ab971454258afd0a",
     ),
     (
+        ("motherduck", "apple-darwin", "aarch64", "0.1.0-alpha.1"),
+        "93802a124489f26854ddd5cbca5055475031db9cb4836822731666a989ef89f4",
+        "ee693c147b76e2f3a3800651dfd83be1694365bf2c21e460cfc9a3c7d09b7d7c",
+    ),
+    (
+        ("motherduck", "manylinux_2_17-linux-gnu", "aarch64", "0.1.0-alpha.1"),
+        "78fedd33563087a632585037c82030c8309364395fb909027c7c3604e3300982",
+        "13b43e6080427f5bd6f6a2d03d001e70c66e40dd37255610fb42cc76c3b4f8a6",
+    ),
+    (
+        ("motherduck", "manylinux_2_17-linux-gnu", "x86_64", "0.1.0-alpha.1"),
+        "fe145aca402b98402751155e4924924b0a2eef85beb0909ae2e484aa9d6e24e9",
+        "a00892c83d660ac6c913494356798956502dde7986ba7d6361708021470091fe",
+    ),
+    (
+        ("motherduck", "pc-windows-msvc", "x86_64", "0.1.0-alpha.1"),
+        "b65817755c8bf4ade958f7031a8b5932a27f88b27420da266a2dc2d62d32d6ae",
+        "e2d8fd5023d26640c63ac83dd4ba0f258848ad54ee5476e3b18b64c8c978e410",
+    ),
+    (
         ("mssql", "apple-darwin", "aarch64", "1.3.1"),
         "7e356f8f2f89a89b7a5c45fc255e8c5429f934b634e6071c689fad323a0f0de4",
         "c056d31a746dddf4570f1e1807860f9b6ea2b1cf0278ed6c25748e224c42d54e",
