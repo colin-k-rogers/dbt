@@ -1,0 +1,7 @@
+kind: Dependencies
+body: Pin the MotherDuck ADBC driver to 0.1.0-alpha.1 and enable CDN fallback when no system driver is available.
+time: 2026-11-16T18:04:31.751290711-08:00
+custom:
+    author: dataders
+    issue: ""
+    project: dbt-core

@@ -445,7 +445,7 @@ impl AdbcDriver {
             (
                 load_strategy @ (CdnCache | SystemThenCdnCache),
                 Snowflake | BigQuery | Postgres | Databricks | Redshift | Spark | DuckDB
-                | DuckDBExtended | LakeCompute | Salesforce | SQLServer | ClickHouse,
+                | DuckDBExtended | LakeCompute | Salesforce | SQLServer | ClickHouse | MotherDuck,
             ) => {
                 #[cfg(debug_assertions)]
                 {
@@ -472,7 +472,7 @@ impl AdbcDriver {
                 }
             }
             // CDN strategy for non-CDN drivers: just fall back to the system strategy.
-            (CdnCache | SystemThenCdnCache | Bridge, MotherDuck | Athena | Exasol) => System(None),
+            (CdnCache | SystemThenCdnCache | Bridge, Athena | Exasol) => System(None),
             // Generic drivers can only be loaded from a file, so fallback to the System strategy.
             (CdnCache | SystemThenCdnCache | Bridge, Generic { library_name, .. }) => {
                 System(Some(library_name.to_string()))
@@ -485,7 +485,7 @@ impl AdbcDriver {
             (
                 load_strategy @ Bridge,
                 Snowflake | BigQuery | Postgres | Databricks | Redshift | Spark | DuckDB
-                | DuckDBExtended | LakeCompute | Salesforce | SQLServer | ClickHouse,
+                | DuckDBExtended | LakeCompute | Salesforce | SQLServer | ClickHouse | MotherDuck,
             ) => load_strategy,
         };
 
@@ -813,6 +813,22 @@ mod tests {
         // try_load_with_builder(Backend::SQLServer, AdbcVersion::V110)?;
         try_load_with_builder(Backend::ClickHouse, AdbcVersion::V110)?;
         // try_load_with_builder(Backend::Exasol, AdbcVersion::V110)?;
+        Ok(())
+    }
+
+    #[test_with::env(ADBC_DRIVER_TESTS)]
+    #[test]
+    fn load_motherduck_cdn() -> Result<()> {
+        try_load_with_builder(Backend::MotherDuck, AdbcVersion::V100)?;
+        try_load_with_builder(Backend::MotherDuck, AdbcVersion::V110)
+    }
+
+    #[test_with::env(ADBC_DRIVER_TESTS)]
+    #[test]
+    fn load_motherduck_system_then_cdn() -> Result<()> {
+        Builder::new(Backend::MotherDuck, LoadStrategy::SystemThenCdnCache)
+            .with_adbc_version(AdbcVersion::V110)
+            .try_load()?;
         Ok(())
     }
 

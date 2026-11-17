@@ -17,10 +17,11 @@ use sha2::digest::Output;
 use sha2::{Digest, Sha256};
 use ureq::tls::{RootCerts, TlsConfig, TlsProvider};
 
-static INSTALLABLE_DRIVERS: &[Backend; 12] = &[
+static INSTALLABLE_DRIVERS: &[Backend; 13] = &[
     Backend::Snowflake,
     Backend::BigQuery,
     Backend::ClickHouse,
+    Backend::MotherDuck,
     Backend::Postgres,
     Backend::Databricks,
     Backend::Redshift,
@@ -413,7 +414,8 @@ fn canonical_name_and_version(backend: Backend) -> (&'static str, &'static str) 
         Backend::LakeCompute => ("dbt", LAKE_COMPUTE_DRIVER_VERSION),
         Backend::SQLServer => ("mssql", MSSQLSERVER_DRIVER_VERSION),
         Backend::ClickHouse => ("clickhouse", CLICKHOUSE_DRIVER_VERSION),
-        Backend::MotherDuck | Backend::Athena | Backend::Exasol | Backend::Generic { .. } => {
+        Backend::MotherDuck => ("motherduck", MOTHERDUCK_DRIVER_VERSION),
+        Backend::Athena | Backend::Exasol | Backend::Generic { .. } => {
             unreachable!("driver_parameters() called with backend={:?}", backend)
         }
     }
@@ -954,6 +956,7 @@ mod tests {
             Backend::Spark,
             Backend::SQLServer,
             Backend::ClickHouse,
+            Backend::MotherDuck,
         ] {
             assert!(
                 is_installable_driver(backend, DRIVER_CACHE_DISABLED),
@@ -962,7 +965,6 @@ mod tests {
         }
 
         for backend in [
-            Backend::MotherDuck,
             Backend::Athena,
             Backend::Exasol,
             Backend::Generic {
@@ -994,6 +996,10 @@ mod tests {
         assert_eq!(
             backend_name_and_version(Backend::Postgres),
             ("postgresql", POSTGRES_DRIVER_VERSION)
+        );
+        assert_eq!(
+            backend_name_and_version(Backend::MotherDuck),
+            ("motherduck", MOTHERDUCK_DRIVER_VERSION)
         );
 
         let (backend_name, triplet) = driver_parameters(Backend::Snowflake);
@@ -1135,9 +1141,9 @@ mod tests {
                     let mut count_hits = 0;
                     for os in *os_alternates {
                         match (backend, *os, *arch) {
-                            // no driver available for Intel Macs connecting to MS SQL or ClickHouse
+                            // These drivers do not publish Intel Mac builds.
                             (
-                                Backend::SQLServer | Backend::ClickHouse,
+                                Backend::SQLServer | Backend::ClickHouse | Backend::MotherDuck,
                                 MACOS_TARGET_OS,
                                 "x86_64",
                             ) => {

@@ -165,6 +165,7 @@ mod tests {
                     .with_password(password);
                 Ok(builder)
             }
+            Backend::MotherDuck => unimplemented!("MotherDuck backend database builder in tests"),
             Backend::Generic { .. } => unimplemented!("generic backend database builder in tests"),
         }?;
         if backend == Backend::Snowflake {
