@@ -2,7 +2,7 @@
    dbt/include/duckdb/macros/materializations/incremental.sql.
    MotherDuck uses regular tables in a staging schema. Success drops them after
    commit; a failed materialization drops the same relation. #}
-{% materialization incremental, adapter='motherduck' %}
+{% materialization incremental, adapter='motherduck', supported_languages=['sql', 'python'] %}
   {% set existing_relation = load_cached_relation(this) %}
   {% set target_relation = this.incorporate(type='table') %}
   {% set intermediate_relation = make_intermediate_relation(target_relation) %}
@@ -34,35 +34,55 @@
   {{ run_hooks(pre_hooks, inside_transaction=False) }}
 
   {% set txn = namespace(explicit=false) %}
-  {% if existing_relation is none %}
-    {{ run_hooks(pre_hooks, inside_transaction=True) }}
-    {% set build_sql = create_table_as(false, target_relation, sql, partitioned_by=partitioned_by, sorted_by=sorted_by) %}
-  {% elif full_refresh_mode %}
-    {% set txn.explicit = true %}
-    {% set build_sql = create_table_as(false, intermediate_relation, sql, partitioned_by=partitioned_by, sorted_by=sorted_by) %}
-  {% else %}
-    {# shortcut: setup pre-creates dbt_temp only; a custom meta.temp_schema_name can still race on first create #}
-    {% do run_query(create_schema(temp_relation)) %}
-    {% do run_query(get_create_table_as_sql(false, temp_relation, sql)) %}
-    {% do to_drop.append(temp_relation) %}
-    {% do adapter.expand_target_column_types(from_relation=temp_relation, to_relation=target_relation) %}
-    {% set dest_columns = process_schema_changes(on_schema_change, temp_relation, existing_relation) %}
-    {% if not dest_columns %}
-      {% set dest_columns = adapter.get_columns_in_relation(existing_relation) %}
+  {% set language = model['language'] %}
+  {# A Flight writes its table from MotherDuck's container, outside this transaction. #}
+  {% if language == 'python' and (existing_relation is none or full_refresh_mode) %}
+    {% if existing_relation and full_refresh_mode %}
+      {% set txn.explicit = true %}
+    {% else %}
+      {{ run_hooks(pre_hooks, inside_transaction=True) }}
     {% endif %}
-    {% set build_sql = motherduck_dml_explicit_transaction(strategy_macro({
-        'target_relation': target_relation,
-        'temp_relation': temp_relation,
-        'unique_key': config.get('unique_key'),
-        'dest_columns': dest_columns,
-        'incremental_predicates': config.get('predicates') or config.get('incremental_predicates')
-    })) %}
-    {% set txn.explicit = true %}
-  {% endif %}
+    {% set python_relation = intermediate_relation if full_refresh_mode else target_relation %}
+    {% call statement('main', language='python') %}
+      {{ create_table_as(false, python_relation, compiled_code, 'python') }}
+    {% endcall %}
+  {% else %}
+    {% if existing_relation is none %}
+      {{ run_hooks(pre_hooks, inside_transaction=True) }}
+      {% set build_sql = create_table_as(false, target_relation, sql, partitioned_by=partitioned_by, sorted_by=sorted_by) %}
+    {% elif full_refresh_mode %}
+      {% set txn.explicit = true %}
+      {% set build_sql = create_table_as(false, intermediate_relation, sql, partitioned_by=partitioned_by, sorted_by=sorted_by) %}
+    {% else %}
+      {# shortcut: setup pre-creates dbt_temp only; a custom meta.temp_schema_name can still race on first create #}
+      {% do run_query(create_schema(temp_relation)) %}
+      {% if language == 'python' %}
+        {% call statement('python', language='python') %}
+          {{ create_table_as(false, temp_relation, compiled_code, 'python') }}
+        {% endcall %}
+      {% else %}
+        {% do run_query(get_create_table_as_sql(false, temp_relation, sql)) %}
+      {% endif %}
+      {% do to_drop.append(temp_relation) %}
+      {% do adapter.expand_target_column_types(from_relation=temp_relation, to_relation=target_relation) %}
+      {% set dest_columns = process_schema_changes(on_schema_change, temp_relation, existing_relation) %}
+      {% if not dest_columns %}
+        {% set dest_columns = adapter.get_columns_in_relation(existing_relation) %}
+      {% endif %}
+      {% set build_sql = motherduck_dml_explicit_transaction(strategy_macro({
+          'target_relation': target_relation,
+          'temp_relation': temp_relation,
+          'unique_key': config.get('unique_key'),
+          'dest_columns': dest_columns,
+          'incremental_predicates': config.get('predicates') or config.get('incremental_predicates')
+      })) %}
+      {% set txn.explicit = true %}
+    {% endif %}
 
-  {% call statement('main') %}
-    {{ build_sql }}
-  {% endcall %}
+    {% call statement('main') %}
+      {{ build_sql }}
+    {% endcall %}
+  {% endif %}
   {% if existing_relation and full_refresh_mode %}
     {% do drop_indexes_on_relation(target_relation) %}
     {% call statement('rename_swap') %}
